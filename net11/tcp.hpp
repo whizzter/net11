@@ -8,7 +8,6 @@
 #include <algorithm>
 
 #include <stdio.h>
-#include <stdlib.h>
 
 #ifdef _MSC_VER
 #include <windows.h>
@@ -38,6 +37,21 @@ namespace net11 {
 		flags|=O_NONBLOCK;
 		fcntl(socket,F_SETFL,flags);
 	#endif
+	}
+
+	template<typename T>
+	std::function<bool(std::vector<char> &)> make_data_producer(T &in_data) {
+		std::shared_ptr<int> off(new int);
+		std::shared_ptr<T> data(new T(in_data));
+		*off=0;
+		return [data,off](std::vector<char> &ob){
+			int dl=data->size()-*off;
+			int ol=ob.capacity()-ob.size();
+			int to_copy=dl<ol?dl:ol;
+			std::copy_n(std::next(data->begin(),*off),to_copy,std::back_inserter(ob));
+			*off+=to_copy;
+			return *off!=data->size();
+		};
 	}
 
 	std::function<bool(std::vector<char>&)> make_line_sink(const char * term,int max,std::function<bool(std::string&)> f) {
@@ -165,10 +179,10 @@ namespace net11 {
 	class connection {
 	public:
 		connection() {
-			printf("conn ctor\n");
+			//printf("conn ctor\n");
 		}
 		virtual ~connection() {
-			printf("conn dtor\n");
+			//printf("conn dtor\n");
 		}
 		std::function<bool(std::vector<char>&)> sink;
 		std::vector<std::function<bool(std::vector<char>&)> > producers;
@@ -187,7 +201,16 @@ namespace net11 {
 		};
 		std::vector<tcpconn> conns;
 
+		bool was_block() {
+#ifdef _MSC_VER
+			return (WSAGetLastError()==WSAEWOULDBLOCK) ;
+#else
+			return (errno==EAGAIN) ;
+#endif
+		}
+
 		int input_buffer_size;
+		int output_buffer_size;
 		bool work_conn(tcpconn &c) {
 			if (c.want_input) {
 				int old_size=c.input.size();
@@ -195,16 +218,11 @@ namespace net11 {
 				c.input.resize(cap);
 				int rc=recv(c.sock,c.input.data()+old_size,cap-old_size,0);
 				if (rc<0) {
-#ifdef _MSC_VER
-					if (WSAGetLastError()!=WSAEWOULDBLOCK)
-#else
-					if (errno!=EAGAIN)
-#endif
-					{
+					if (was_block()) {
+						//printf("WOULD BLOCK\n");
+					} else {
 						// not a blocking error!
 						return false;
-					} else {
-						//printf("WOULD BLOCK\n");
 					}
 				} else if (rc>0) {
 					c.input.resize(old_size+rc);
@@ -214,10 +232,38 @@ namespace net11 {
 					return false;
 				}
 			}
+			while (c.output.size() || c.conn->producers.size()) {
+				//printf("Has output:%d %d\n",c.output.size(),c.conn->producers.size());
+				if (c.output.size()) {
+					//printf("network output bytes:%d [",c.output.size());
+					//for (int i=0;i<c.output.size();i++) {
+					//	printf("%c",c.output[i]);
+					//}
+					//printf("]\n");
+					int rc=send(c.sock,c.output.data(),c.output.size(),0);
+					//printf("network send:%d\n",rc);
+					if (rc<0) {
+						if (!was_block()) {
+							// error other than wouldblock
+							return false;
+						}
+					} else if (rc>0) {
+						bool brk=rc!=c.output.size();
+						c.output.erase(c.output.begin(),c.output.begin()+rc);
+						if (brk)
+							break; // could not take all data, do more later
+					}
+				}
+				if (c.output.size()<c.output.capacity() && c.conn->producers.size()) {
+					if (!c.conn->producers.front()(c.output)) {
+						c.conn->producers.erase(c.conn->producers.begin());
+					}
+				}
+			}
 			return c.want_input || c.output.size() || c.conn->producers.size();
 		}
 	public:
-		tcp(int in_input_buffer_size=4096):input_buffer_size(in_input_buffer_size) {
+		tcp(int in_input_buffer_size=4096,int in_out_buffer_size=20):input_buffer_size(in_input_buffer_size),output_buffer_size(in_out_buffer_size) {
 #ifdef _MSC_VER
 			WSADATA wsa_data;
 			if (WSAStartup(MAKEWORD(1,0),&wsa_data)) {
@@ -249,6 +295,7 @@ namespace net11 {
 					conns.emplace_back();
 					conns.back().sock=newsock;
 					conns.back().input.reserve(input_buffer_size);
+					conns.back().output.reserve(input_buffer_size);
 					conns.back().want_input=true;
 					//conns.back().output?
 					conns.back().conn.reset(l.second());
