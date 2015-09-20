@@ -7,19 +7,20 @@ int main(int argc,char **argv) {
 	// start listening for http requests
 	if (l.listen(8080,
 		// creates a new server instance once we've started listening
-		net11::make_http_server([](net11::http_connection &c){
-
+		net11::make_http_server(
 			// the routing function
-			std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
+			[](net11::http_connection &c){
+				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 
-			// default page
-			if (c.url()=="/") {
-				return net11::make_text_response(200,{},"Hello world!");
+				// default page
+				if (c.url()=="/") {
+					return net11::make_text_response(200,{},"Hello world!");
+				}
+
+				// return null for a 404 response
+				return (net11::http_response*)nullptr;
 			}
-
-			// return null for a 404 response
-			return (net11::http_response*)nullptr;
-		})
+		)
 	)) {
 		printf("Error listening\n");
 		return -1;
