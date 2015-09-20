@@ -12,9 +12,17 @@ int main(int argc,char **argv) {
 			[](net11::http_connection &c){
 				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 
-				// default page
-				if (c.url()=="/") {
+				// simple function return
+				if (c.url()=="/hello") {
 					return net11::make_text_response(200,{},"Hello world!");
+				}
+
+				if (c.url()=="/") {
+					c.url()="/files/index.html";
+				}
+
+				if (0==c.url().find("/files/")) {
+					return net11::make_file_response("public_html/",c.url().substr(7));
 				}
 
 				// return null for a 404 response

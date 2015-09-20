@@ -2,6 +2,9 @@
 #include <map>
 #include <algorithm>
 
+#include <sys/stat.h>
+#include <fstream>
+
 #include "tcp.hpp"
 
 namespace net11 {
@@ -10,6 +13,7 @@ namespace net11 {
 	class http_websocket;
 
 	http_response* make_text_response(int code,std::map<std::string,std::string> &head,std::string &data);
+
 
 	class http_response {
 		friend http_connection;
@@ -21,9 +25,18 @@ namespace net11 {
 
 		http_response(){}
 	protected:
-		virtual void produce(http_connection &conn);
+		virtual bool produce(http_connection &conn);
 	public:
 		void set_header(std::string &k,std::string &v) {
+			for (int i=0;i<k.size();i++) {
+				if (isupper(k[i])) {
+					std::string k2;
+					for (i=0;i<k.size();i++)
+						k2.push_back(tolower(k[i]));
+					head[k2]=v;
+					return;
+				}
+			}
 			head[k]=v;
 		}
 		virtual ~http_response() {}
@@ -72,19 +85,23 @@ namespace net11 {
 				[this](const char *err) {
 					//std::cout<<"req:"<<reqline[0]<<" url:"<<reqline[1]<<" ver:"<<reqline[2]<<"\n";
 					//conn->sink=[](std)
+
+					// TODO: urlencodings?
 					http_response *r=router(*this);
 					if (!r) {
 						std::map<std::string,std::string> head{{"connection","close"}};
-						r=make_text_response(404,head,std::string("Error 404, not found"));
+						r=make_text_response(404,head,"Error 404, "+url()+" not found");
 					}
+					// reset our sink in case the response wants to hijack it
+					sink=reqlinesink;
 					// TODO: make sure that connection lines are there?
-					r->produce(*this);
+					bool rv=r->produce(*this);
 					delete r;
 					reqline[0].resize(0);
 					reqline[1].resize(0);
 					reqline[2].resize(0);
 					headers.clear();
-					return false;
+					return rv;
 				}
 			);
 		}
@@ -124,6 +141,7 @@ namespace net11 {
 		out->prod=prod;
 		return out;
 	}
+	
 	http_response* make_blob_response(int code,std::map<std::string,std::string> &head,std::vector<char> &in_data) {
 		auto rv=make_stream_response(code,head,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
@@ -145,7 +163,7 @@ namespace net11 {
 		return rv;
 	}
 
-	void http_response::produce(http_connection &conn) {
+	bool http_response::produce(http_connection &conn) {
 		std::string resline="HTTP/1.1 "+std::to_string(code)+" some message\r\n";
 		for(auto kv:head) {
 			resline=resline+kv.first+": "+kv.second+"\r\n";
@@ -153,7 +171,84 @@ namespace net11 {
 		resline+="\r\n";
 		//std::cout<<"RESP:["<<resline<<"]";
 		conn.producers.push_back(make_data_producer(resline));
-		conn.producers.push_back(prod);
+		if (head.count("content-length")) {
+			conn.producers.push_back(prod);
+		} else {
+			abort(); //conn.producers.push_back([this](
+		}
+		return false;
+	}
+
+	http_response* make_file_response(std::string base,std::string checked) {
+		struct stat stbuf;
+		int last='/';
+		int end=checked.size();
+		for (int i=0;i<checked.size();i++) {
+			if (checked[i]=='\\')
+				return make_text_response(500,{},"Bad request, \\ not allowed in url");
+			if (checked[i]=='?') {
+				end=i;
+				break;
+			}
+			if (last=='/') {
+				if (checked[i]=='.') {
+					return make_text_response(500,{},"Bad request with a dotfile named file comming after a /");
+				} else if (checked[i]=='/') {
+					return make_text_response(500,{},"Bad request, multiple // after eachother");
+				}
+			}
+			if (checked[i]=='/') {
+				// check for directory presence!
+				std::string tmp=base+checked.substr(0,i);
+				int sr=stat( tmp.c_str(),&stbuf);
+				if (sr) {
+					return make_text_response(404,{},"Not found "+checked.substr(0,i));
+				}
+				if (!(stbuf.st_mode&S_IFDIR)) {
+					return make_text_response(404,{},"Not a dir "+checked.substr(0,i));
+				}
+			}
+			last=checked[i];
+		}
+		std::string tmp=base+checked.substr(0,end);
+		if (stat(tmp.c_str(),&stbuf)) {
+			return make_text_response(404,{},"Not found "+checked.substr(0,end));
+		}
+		if (!(stbuf.st_mode&S_IFREG)) {
+			return make_text_response(404,{},"Not a file "+checked.substr(0,end));
+		}
+		
+		FILE *f=fopen(tmp.c_str(),"rb");
+		if (!f)
+			return make_text_response(400,{},"Could not open file "+checked.substr(0,end));
+		struct fh {
+			FILE *f;
+			fh(FILE *in_f):f(in_f){}
+			~fh() {
+				fclose(f);
+			}
+		};
+		std::shared_ptr<fh> fp(new fh(f));
+
+		std::map<std::string,std::string> head={
+			{"content-length",std::to_string(stbuf.st_size)}
+		};
+		return make_stream_response(200,head,[fp](std::vector<char> &ob) {
+			int osz=ob.size();
+			int tr=ob.capacity()-osz;
+			ob.resize(ob.capacity());
+			int rc=fread(ob.data()+osz,1,tr,fp->f);
+			if (rc>=0) {
+				ob.resize(osz+rc);
+			} else {
+				ob.resize(osz);
+			}
+			if (rc<=0) {
+				if (feof(fp->f))
+					return false;
+			}
+			return true;
+		});
 	}
 }
 

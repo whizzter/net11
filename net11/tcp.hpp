@@ -40,9 +40,9 @@ namespace net11 {
 	}
 
 	template<typename T>
-	std::function<bool(std::vector<char> &)> make_data_producer(T &in_data) {
+	std::function<bool(std::vector<char> &)> make_data_producer(T * in_data) {
 		std::shared_ptr<int> off(new int);
-		std::shared_ptr<T> data(new T(in_data));
+		std::shared_ptr<T> data(in_data);
 		*off=0;
 		return [data,off](std::vector<char> &ob){
 			int dl=data->size()-*off;
@@ -52,6 +52,11 @@ namespace net11 {
 			*off+=to_copy;
 			return *off!=data->size();
 		};
+	}
+
+	template<typename T>
+	std::function<bool(std::vector<char> &)> make_data_producer(T &in_data) {
+		return make_data_producer(new T(in_data));
 	}
 
 	std::function<bool(std::vector<char>&)> make_line_sink(const char * term,int max,std::function<bool(std::string&)> f) {
@@ -233,7 +238,7 @@ namespace net11 {
 				}
 			}
 			while (c.output.size() || c.conn->producers.size()) {
-				//printf("Has output:%d %d\n",c.output.size(),c.conn->producers.size());
+				//printf("Has output:%d(%d) %d\n",c.output.size(),c.output.capacity(),c.conn->producers.size());
 				if (c.output.size()) {
 					//printf("network output bytes:%d [",c.output.size());
 					//for (int i=0;i<c.output.size();i++) {
@@ -263,7 +268,7 @@ namespace net11 {
 			return c.want_input || c.output.size() || c.conn->producers.size();
 		}
 	public:
-		tcp(int in_input_buffer_size=4096,int in_out_buffer_size=20):input_buffer_size(in_input_buffer_size),output_buffer_size(in_out_buffer_size) {
+		tcp(int in_input_buffer_size=4096,int in_out_buffer_size=4096):input_buffer_size(in_input_buffer_size),output_buffer_size(in_out_buffer_size) {
 #ifdef _MSC_VER
 			WSADATA wsa_data;
 			if (WSAStartup(MAKEWORD(1,0),&wsa_data)) {
@@ -295,7 +300,7 @@ namespace net11 {
 					conns.emplace_back();
 					conns.back().sock=newsock;
 					conns.back().input.reserve(input_buffer_size);
-					conns.back().output.reserve(input_buffer_size);
+					conns.back().output.reserve(output_buffer_size);
 					conns.back().want_input=true;
 					//conns.back().output?
 					conns.back().conn.reset(l.second());
