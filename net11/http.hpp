@@ -129,12 +129,22 @@ namespace net11 {
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
+	http_response* make_blob_response(int code,std::map<std::string,std::string> head,std::vector<char> &in_data) {
+		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
+		return rv;
+	}
 	http_response* make_text_response(int code,std::map<std::string,std::string> &head,std::string &in_data) {
 		auto rv=make_stream_response(code,head,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
-	
+	http_response* make_text_response(int code,std::map<std::string,std::string> head,std::string in_data) {
+		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
+		return rv;
+	}
+
 	void http_response::produce(http_connection &conn) {
 		std::string resline="HTTP/1.1 "+std::to_string(code)+" some message\r\n";
 		for(auto kv:head) {

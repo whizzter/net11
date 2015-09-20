@@ -6,19 +6,20 @@ int main(int argc,char **argv) {
 
 	// start listening for http requests
 	if (l.listen(8080,
-		// create new server instance once we've started listening
+		// creates a new server instance once we've started listening
 		net11::make_http_server([](net11::http_connection &c){
+
+			// the routing function
 			std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 
-			return nullptr;
+			// default page
+			if (c.url()=="/") {
+				return net11::make_text_response(200,{},"Hello world!");
+			}
+
+			// return null for a 404 response
+			return (net11::http_response*)nullptr;
 		})
-
-		// std::string[3] reqline
-		// std::map<std::string,std::string> headers
-		// 
-
-		// ^- should pass a closure that handles pre-parsed
-		// requests to determine routing,etc
 	)) {
 		printf("Error listening\n");
 		return -1;
