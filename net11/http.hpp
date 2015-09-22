@@ -17,11 +17,11 @@ namespace net11 {
 
 	class http_response {
 		friend http_connection;
-		friend http_response* make_stream_response(int code,std::map<std::string,std::string> &head,std::function<bool(std::vector<char> &data)> prod);
+		friend http_response* make_stream_response(int code,std::map<std::string,std::string> &head,std::function<bool(buffer &data)> prod);
 
 		int code;
 		std::map<std::string,std::string> head;
-		std::function<bool(std::vector<char> &)> prod;
+		std::function<bool(buffer &)> prod;
 
 		http_response(){}
 	protected:
@@ -45,11 +45,11 @@ namespace net11 {
 	class http_connection : public net11::connection {
 		friend std::function<net11::connection*()> make_http_server(std::function<http_response*(http_connection &conn)> route);
 		friend http_response;
-		std::function<bool(std::vector<char>&)> reqlinesink;
+		std::shared_ptr<sink> reqlinesink;
 		std::shared_ptr<std::regex> rereqline;
 		std::string reqline[3];
 
-		std::function<bool(std::vector<char>&)> headsink;
+		std::shared_ptr<sink> headsink;
 		std::map<std::string,std::string> headers;
 
 		std::function<http_response*(http_connection &conn)> router;
@@ -58,8 +58,9 @@ namespace net11 {
 			std::shared_ptr<std::regex> in_re,
 			std::function<http_response*(http_connection &conn)> in_router
 		):rereqline(in_re),router(in_router) {
-			sink=reqlinesink=net11::make_line_sink("\r\n",4096,[this](std::string &l){
+			reqlinesink=std::shared_ptr<sink>(new net11::line_parser_sink("\r\n",4096,[this](std::string &l){
 				std::smatch sma;
+				//std::cout<<"REqline:"<<l<<"\n";
 				if (std::regex_match(l,sma,*rereqline)) {
 					reqline[0]=sma.str(1);
 					reqline[1]=sma.str(2);
@@ -68,15 +69,14 @@ namespace net11 {
 					} else {
 						reqline[2]=sma.str(3);
 					}
-					sink=headsink;
+					this->current_sink=headsink;
 					return true;
 				} else {
 					// TODO: error handling?!
 					return false;
 				}
-			});
-			// TODO: add a max-headers-size parameter to replace the string sizes?
-			headsink=net11::make_header_sink(80,65536,
+			}));
+			headsink=std::shared_ptr<sink>(new header_parser_sink(128*1024,
 				[this](std::string &k,std::string &v){
 					//std::cout<<"HeadKey=["<<k<<"] HeadValue=["<<v<<"]\n";
 					headers[k]=v;
@@ -84,16 +84,15 @@ namespace net11 {
 				},
 				[this](const char *err) {
 					//std::cout<<"req:"<<reqline[0]<<" url:"<<reqline[1]<<" ver:"<<reqline[2]<<"\n";
-					//conn->sink=[](std)
 
 					// TODO: urlencodings?
 					http_response *r=router(*this);
 					if (!r) {
-						std::map<std::string,std::string> head{{"connection","close"}};
+						std::map<std::string,std::string> head; //{{"connection","close"}};
 						r=make_text_response(404,head,"Error 404, "+url()+" not found");
 					}
 					// reset our sink in case the response wants to hijack it
-					sink=reqlinesink;
+					this->current_sink=reqlinesink;
 					// TODO: make sure that connection lines are there?
 					bool rv=r->produce(*this);
 					delete r;
@@ -103,7 +102,8 @@ namespace net11 {
 					headers.clear();
 					return rv;
 				}
-			);
+			));
+			current_sink=reqlinesink;
 		}
 		virtual ~http_connection() {
 			//printf("destroying http_connection\n");
@@ -134,7 +134,7 @@ namespace net11 {
 		};
 	};
 
-	http_response* make_stream_response(int code,std::map<std::string,std::string> &head,std::function<bool(std::vector<char> &data)> prod) {
+	http_response* make_stream_response(int code,std::map<std::string,std::string> &head,std::function<bool(buffer &data)> prod) {
 		auto out=new http_response();
 		out->code=code;
 		out->head=head;
@@ -169,14 +169,13 @@ namespace net11 {
 			resline=resline+kv.first+": "+kv.second+"\r\n";
 		}
 		resline+="\r\n";
-		//std::cout<<"RESP:["<<resline<<"]";
 		conn.producers.push_back(make_data_producer(resline));
 		if (head.count("content-length")) {
 			conn.producers.push_back(prod);
 		} else {
 			abort(); //conn.producers.push_back([this](
 		}
-		return false;
+		return true;
 	}
 
 	http_response* make_file_response(std::string base,std::string checked) {
@@ -233,15 +232,12 @@ namespace net11 {
 		std::map<std::string,std::string> head={
 			{"content-length",std::to_string(stbuf.st_size)}
 		};
-		return make_stream_response(200,head,[fp](std::vector<char> &ob) {
-			int osz=ob.size();
-			int tr=ob.capacity()-osz;
-			ob.resize(ob.capacity());
-			int rc=fread(ob.data()+osz,1,tr,fp->f);
+		return make_stream_response(200,head,[fp](buffer &ob) {
+			int osz=ob.usage();
+			int tr=ob.compact();
+			int rc=fread(ob.to_produce(),1,tr,fp->f);
 			if (rc>=0) {
-				ob.resize(osz+rc);
-			} else {
-				ob.resize(osz);
+				ob.produced(osz+rc);
 			}
 			if (rc<=0) {
 				if (feof(fp->f))

@@ -10,7 +10,7 @@ int main(int argc,char **argv) {
 		net11::make_http_server(
 			// the routing function
 			[](net11::http_connection &c){
-				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
+				//std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 
 				// simple function return
 				if (c.url()=="/hello") {
@@ -20,6 +20,8 @@ int main(int argc,char **argv) {
 				if (c.url()=="/") {
 					c.url()="/files/index.html";
 				}
+				if (c.url()=="/a.txt") c.url()="/files/a.txt";
+				if (c.url()=="/b.txt") c.url()="/files/b.txt";
 
 				if (0==c.url().find("/files/")) {
 					return net11::make_file_response("public_html/",c.url().substr(7));
