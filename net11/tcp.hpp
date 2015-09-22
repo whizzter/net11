@@ -6,8 +6,9 @@
 #include <utility>
 
 #include <algorithm>
+#include <cstring>
 
-#include <stdio.h>
+//#include <stdio.h>
 
 #ifdef _MSC_VER
 #include <windows.h>
@@ -82,7 +83,7 @@ namespace net11 {
 			if (m_bottom==0)
 				return direct_avail();
 			int sz=usage();
-			memmove(m_data,m_data+m_bottom,sz);
+			std::memmove(m_data,m_data+m_bottom,sz);
 			m_bottom=0;
 			m_top=sz;
 			return direct_avail();
@@ -132,7 +133,7 @@ namespace net11 {
 				}
 			}
 			// now copy the amount we can take
-			memcpy(to_produce(),source.to_consume(),to_copy);
+			std::memcpy(to_produce(),source.to_consume(),to_copy);
 			produced(to_copy);
 			source.consumed(to_copy);
 		}
@@ -172,7 +173,7 @@ namespace net11 {
 			int dataleft=data->size()-*off; // dl is how much we have left to send
 			int outleft=ob.compact();
 			int to_copy=dataleft<outleft?dataleft:outleft;
-			memcpy(ob.to_produce(),data->data()+*off,to_copy);
+			std::memcpy(ob.to_produce(),data->data()+*off,to_copy);
 			ob.produced(to_copy);
 			*off+=to_copy;
 			return *off!=data->size();
