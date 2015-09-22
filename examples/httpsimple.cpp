@@ -14,7 +14,7 @@ int main(int argc,char **argv) {
 
 				// simple function return
 				if (c.url()=="/hello") {
-					return net11::make_text_response(200,{},"Hello world!");
+					return net11::make_text_response(200,"Hello world!");
 				}
 
 				if (c.url()=="/") {

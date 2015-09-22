@@ -1,5 +1,5 @@
 #include <string>
-#include <regex>
+//#include <regex>
 #include <map>
 #include <algorithm>
 
@@ -13,12 +13,12 @@ namespace net11 {
 	class http_response;
 	class http_websocket;
 
-	http_response* make_text_response(int code,std::map<std::string,std::string> &head,std::string &data);
+	http_response* make_text_response(int code,std::string &data);
 
 
 	class http_response {
 		friend http_connection;
-		friend http_response* make_stream_response(int code,const std::map<std::string,std::string> &head,std::function<bool(buffer &data)> prod);
+		friend http_response* make_stream_response(int code,std::function<bool(buffer &data)> prod);
 
 		int code;
 		std::map<std::string,std::string> head;
@@ -28,17 +28,18 @@ namespace net11 {
 	protected:
 		virtual bool produce(http_connection &conn);
 	public:
-		void set_header(const std::string &k,const std::string &v) {
+		http_response* set_header(const std::string &k,const std::string &v) {
 			for (int i=0;i<k.size();i++) {
 				if (isupper(k[i])) {
 					std::string k2;
 					for (i=0;i<k.size();i++)
 						k2.push_back(tolower(k[i]));
 					head[k2]=v;
-					return;
+					return this;
 				}
 			}
 			head[k]=v;
+			return this;
 		}
 		virtual ~http_response() {}
 	};
@@ -47,7 +48,7 @@ namespace net11 {
 		friend std::function<net11::connection*()> make_http_server(std::function<http_response*(http_connection &conn)> route);
 		friend http_response;
 		std::shared_ptr<sink> reqlinesink;
-		std::shared_ptr<std::regex> rereqline;
+		//std::shared_ptr<std::regex> rereqline;
 		std::string reqline[3];
 
 		std::shared_ptr<sink> headsink;
@@ -56,20 +57,38 @@ namespace net11 {
 		std::function<http_response*(http_connection &conn)> router;
 
 		http_connection(
-			std::shared_ptr<std::regex> in_re,
+			//std::shared_ptr<std::regex> in_re,
 			std::function<http_response*(http_connection &conn)> in_router
-		):rereqline(in_re),router(in_router) {
+		):router(in_router) {
 			reqlinesink=std::shared_ptr<sink>(new net11::line_parser_sink("\r\n",4096,[this](std::string &l){
-				std::smatch sma;
-				//std::cout<<"REqline:"<<l<<"\n";
-				if (std::regex_match(l,sma,*rereqline)) {
-					reqline[0]=sma.str(1);
-					reqline[1]=sma.str(2);
-					if (sma.size()<3) {
-						reqline[2]="";
+				bool in_white=false;
+				int outidx=0;
+				reqline[0].resize(0);
+				reqline[1].resize(0);
+				reqline[2].resize(0);
+				for (int i=0;i<l.size();i++) {
+					char c=l[i];
+					if (isspace(c)) {
+						in_white=true;
 					} else {
-						reqline[2]=sma.str(3);
+						if (in_white && outidx<2) {
+							outidx++;
+						}
+						reqline[outidx].push_back(c);
+						in_white=false;
 					}
+				}
+				//std::smatch sma;
+				//std::cout<<"REqline:"<<l<<"\n";
+				//if (std::regex_match(l,sma,*rereqline)) {
+				if (outidx>0 && reqline[0].size() && reqline[1].size()) {
+					//reqline[0]=sma.str(1);
+					//reqline[1]=sma.str(2);
+					//if (sma.size()<3) {
+					//	reqline[2]="";
+					//} else {
+					//	reqline[2]=sma.str(3);
+					//}
 					this->current_sink=headsink;
 					return true;
 				} else {
@@ -89,9 +108,9 @@ namespace net11 {
 					// TODO: urlencodings?
 					http_response *r=router(*this);
 					if (!r) {
-						std::map<std::string,std::string> head; //{{"connection","close"}};
+						//std::map<std::string,std::string> head; //{{"connection","close"}};
 						std::string msg="Error 404, "+url()+" not found";
-						r=make_text_response(404,head,msg);
+						r=make_text_response(404,msg);
 					}
 					// reset our sink in case the response wants to hijack it
 					this->current_sink=reqlinesink;
@@ -128,47 +147,47 @@ namespace net11 {
 
 	std::function<net11::connection*()> make_http_server(std::function<http_response*(http_connection &conn)> route) {
 		// init the regexp once if the regex compiler is slow.
-		std::shared_ptr<std::regex> re(new std::regex("(\\S+)\\s+(\\S+)(?:\\s+(.+))?"));
+		//std::shared_ptr<std::regex> re(new std::regex("(\\S+)\\s+(\\S+)(?:\\s+(.+))?"));
 
 		// now create a connection spawn function
-		return [re,route]() {
-			return (net11::connection*)new http_connection(re,route);
+		return [route]() {
+			return (net11::connection*)new http_connection(route);
 		};
 	};
 
-	http_response* make_stream_response(int code,const std::map<std::string,std::string> &head,std::function<bool(buffer &data)> prod) {
+	http_response* make_stream_response(int code,std::function<bool(buffer &data)> prod) {
 		auto out=new http_response();
 		out->code=code;
-		out->head=head;
+		//out->head=head;
 		out->prod=prod;
 		return out;
 	}
 	
-	http_response* make_blob_response(int code,const std::map<std::string,std::string> &head,std::vector<char> &in_data) {
-		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+	http_response* make_blob_response(int code,std::vector<char> &in_data) {
+		auto rv=make_stream_response(code,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
-	http_response* make_blob_response(int code,const std::map<std::string,std::string> head,std::vector<char> &in_data) {
-		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+	http_response* make_blob_response(int code,std::vector<char> in_data) {
+		auto rv=make_stream_response(code,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
-	http_response* make_text_response(int code,const std::map<std::string,std::string> &head,std::string &in_data) {
-		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+	http_response* make_text_response(int code,std::string &in_data) {
+		auto rv=make_stream_response(code,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
-	http_response* make_text_response(int code,const std::map<std::string,std::string> head,std::string in_data) {
-		auto rv=make_stream_response(code,head,make_data_producer(in_data));
+	http_response* make_text_response(int code,std::string in_data) {
+		auto rv=make_stream_response(code,make_data_producer(in_data));
 		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 		return rv;
 	}
-	http_response* make_text_response(int code,const std::initializer_list<std::pair<const std::string,std::string>> &headinit,const std::string in_data) {
-		auto rv=make_stream_response(code,std::map<std::string,std::string>(headinit),make_data_producer(in_data));
-		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
-		return rv;
-	}
+//	http_response* make_text_response(int code,const std::string in_data) {
+//		auto rv=make_stream_response(code,std::map<std::string,std::string>(headinit),make_data_producer(in_data));
+//		rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
+//		return rv;
+//	}
 
 	bool http_response::produce(http_connection &conn) {
 		std::string resline="HTTP/1.1 "+std::to_string(code)+" some message\r\n";
@@ -189,19 +208,18 @@ namespace net11 {
 		struct stat stbuf;
 		int last='/';
 		int end=checked.size();
-		std::map<std::string,std::string> empty;
 		for (int i=0;i<checked.size();i++) {
 			if (checked[i]=='\\')
-				return make_text_response(500,empty,"Bad request, \\ not allowed in url");
+				return make_text_response(500,"Bad request, \\ not allowed in url");
 			if (checked[i]=='?') {
 				end=i;
 				break;
 			}
 			if (last=='/') {
 				if (checked[i]=='.') {
-					return make_text_response(500,empty,"Bad request with a dotfile named file comming after a /");
+					return make_text_response(500,"Bad request with a dotfile named file comming after a /");
 				} else if (checked[i]=='/') {
-					return make_text_response(500,empty,"Bad request, multiple // after eachother");
+					return make_text_response(500,"Bad request, multiple // after eachother");
 				}
 			}
 			if (checked[i]=='/') {
@@ -209,25 +227,25 @@ namespace net11 {
 				std::string tmp=base+checked.substr(0,i);
 				int sr=stat( tmp.c_str(),&stbuf);
 				if (sr) {
-					return make_text_response(404,empty,"Not found "+checked.substr(0,i));
+					return make_text_response(404,"Not found "+checked.substr(0,i));
 				}
 				if (!(stbuf.st_mode&S_IFDIR)) {
-					return make_text_response(404,empty,"Not a dir "+checked.substr(0,i));
+					return make_text_response(404,"Not a dir "+checked.substr(0,i));
 				}
 			}
 			last=checked[i];
 		}
 		std::string tmp=base+checked.substr(0,end);
 		if (stat(tmp.c_str(),&stbuf)) {
-			return make_text_response(404,empty,"Not found "+checked.substr(0,end));
+			return make_text_response(404,"Not found "+checked.substr(0,end));
 		}
 		if (!(stbuf.st_mode&S_IFREG)) {
-			return make_text_response(404,empty,"Not a file "+checked.substr(0,end));
+			return make_text_response(404,"Not a file "+checked.substr(0,end));
 		}
 		
 		FILE *f=fopen(tmp.c_str(),"rb");
 		if (!f)
-			return make_text_response(400,empty,"Could not open file "+checked.substr(0,end));
+			return make_text_response(400,"Could not open file "+checked.substr(0,end));
 		struct fh {
 			FILE *f;
 			fh(FILE *in_f):f(in_f){}
@@ -237,10 +255,7 @@ namespace net11 {
 		};
 		std::shared_ptr<fh> fp(new fh(f));
 
-		std::map<std::string,std::string> head={
-			{"content-length",std::to_string(stbuf.st_size)}
-		};
-		return make_stream_response(200,head,[fp](buffer &ob) {
+		return make_stream_response(200,[fp](buffer &ob) {
 			int osz=ob.usage();
 			int tr=ob.compact();
 			int rc=fread(ob.to_produce(),1,tr,fp->f);
@@ -252,7 +267,7 @@ namespace net11 {
 					return false;
 			}
 			return true;
-		});
+		})->set_header("content-length",std::to_string(stbuf.st_size));
 	}
 }
 
