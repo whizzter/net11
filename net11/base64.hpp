@@ -21,12 +21,12 @@ namespace net11 {
 		-1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1, -1,-1,-1,-1,-1,-1,-1,-1
 	};
 
-	class base64enc {
+	class base64encoder {
 		int bits;
 		int count;
 		char tmp[4];
 	public:
-		base64enc():bits(0),count(0) {}
+		base64encoder():bits(0),count(0) {}
 		char* encode(char c) {
 			bits=(bits<<8)|(c&0xff);
 			count+=8;
@@ -55,11 +55,11 @@ namespace net11 {
 		}
 	};
 
-	class base64dec {
+	class base64decoder {
 		int bits;
 		int count;
 	public:
-		base64dec():bits(0),count(0) {}
+		base64decoder():bits(0),count(0) {}
 		int decode(char i) {
 			int lu=base64lookup[i&0xff];
 			if (lu<0)

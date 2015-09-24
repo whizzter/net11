@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <string>
 #include <stdint.h>
 
 namespace net11 {
@@ -76,6 +75,21 @@ namespace net11 {
 	public:
 		// initialize default parameters
 		sha1() {
+			reinit();
+		}
+		// utility constructors to hash some input data directly.
+		template<typename T>
+		sha1(const T d,int count) {
+			reinit();
+			addbytes(d,count);
+		}
+		template<typename T>
+		sha1(T &in) {
+			reinit();
+			addbytes(in);
+		}
+
+		void reinit() {
 			acc = 0;
 			ml = 0;
 			h[0]=0x67452301;
@@ -84,6 +98,7 @@ namespace net11 {
 			h[3]=0x10325476;
 			h[4]=0xc3d2e1f0;
 		}
+
 		// add a single byte to the hash calculations
 		inline void addbyte(uint8_t b) {
 			acc = (acc << 8) | (b & 0xff);
@@ -97,12 +112,10 @@ namespace net11 {
 				}
 			}
 		}
-		// proxy function to add a number of bytes
-		void addbytes(const char *b,int count) {
-			addbytes((const uint8_t*)b,count);
-		}
-		// function to add a number of bytes quickly.
-		void addbytes(const uint8_t *b,int count) {
+		// function to add a counted number of bytes quickly.
+		template<typename T>
+		void addbytes(const T b,int count) {
+			//uint8_t *b=(uint8_t*)b;
 			int i = 0;
 			// pre-roll out any odd bytes
 			while (i < count && (ml & 3))
@@ -112,7 +125,7 @@ namespace net11 {
 			// now do the direct word iters
 			while (fc--) {
 				// set the word
-				w[(ml >> 2) & 0xf] = (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
+				w[(ml >> 2) & 0xf] = (((uint8_t)b[i]) << 24) | (((uint8_t)b[i + 1]) << 16) | (((uint8_t)b[i + 2]) << 8) | ((uint8_t)b[i + 3]);
 				// increment size and dest ptr
 				ml += 4;
 				i += 4;
@@ -124,9 +137,10 @@ namespace net11 {
 			while (i < count)
 				addbyte(b[i++]);
 		}
-		// utility proxy to unpack bytes from a std::string
-		void addbytes(std::string str) {
-			addbytes(str.data(),str.size());
+		// utility proxies to unpack bytes from a stl like container
+		template<typename T>
+		void addbytes(T &cnt) {
+			addbytes(cnt.data(),cnt.size());
 		}
 		// outputs a digest
 		void digest(char *o) {
