@@ -222,19 +222,8 @@ namespace net11 {
 			return true;
 		}
 
-		class websocket_response : public response {
-			friend response* make_websocket(connection &c,int max_packet,std::function<bool(std::vector<char>&)> on_data);
-			websocket_response() {
-				code=101;
-			}
-			bool produce(connection &conn) {
-				produce_headers(conn);
-				// TODO: produce data?!
-				return true;
-			}
-		};
 
-		class websocket_datasink : public sink {
+		class websocket_sink : public sink {
 			enum wsstate {
 				firstbyte=0,
 				sizebyte,
@@ -249,19 +238,19 @@ namespace net11 {
 			bool want_mask;
 			uint32_t mask;
 			std::vector<char> data;
-			void advance() {
+			bool advance() {
 				count=0;
 				if (state==sizebyte || state==sizeextra) {
 					if (want_mask) {
 						state=maskbytes;
-						return;
+						return true;
 					}
 				}
 				state=bodybytes;
-				// TODO callback
+				return packet_start(info&0x80,info&0xf,size);
 			}
 		public:
-			websocket_datasink():state(firstbyte) {}
+			websocket_sink():state(firstbyte) {}
 			virtual bool drain(buffer &buf) {
 				while(buf.usage()) {
 					switch(state) {
@@ -277,7 +266,8 @@ namespace net11 {
 							want_mask=tmp&0x80;
 							if ((tmp&0x7f)<126) {
 								size=tmp&0x7f;
-								advance();
+								if (!advance())
+									return false;
 								continue;
 							} else {
 								if((tmp&0x7f)==126) {
@@ -293,21 +283,26 @@ namespace net11 {
 					case sizeextra:
 						size=(size<<8)|(buf.consume()&0xff);
 						if ((++count)==8) {
-							advance();
+							if (!advance())
+								return false;
 						}
 						continue;
 					case maskbytes :
 						mask=(mask<<8)|(buf.consume()&0xff);
 						if ((++count)==4) {
-							advance();
+							if (!advance())
+								return false;
 						}
 						continue;
 					case bodybytes :
 						{
 							int b=(buf.consume()^( mask >> ( 8*(3^(count&3))) ))&0xff;
-							printf("Read websocket byte: %d (%c)\n",b,b);
+							packet_data(b);
+							//printf("Read websocket byte: %d (%c)\n",b,b);
 							if (++count==size) {
-								printf("End of packet\n");
+								//printf("End of packet\n");
+								if (!packet_end(info&0x80,info&0xf))
+									return false;
 								state=firstbyte;
 							}
 							continue;
@@ -316,9 +311,25 @@ namespace net11 {
 				}
 				return true;
 			}
+			virtual bool packet_start(bool fin,int type,uint64_t size)=0;
+			virtual void packet_data(char c)=0;
+			virtual bool packet_end(bool fin,int type)=0;
 		};
 
-		response* make_websocket(connection &c,int max_packet,std::function<bool(std::vector<char>&)> on_data) {
+		class websocket_response : public response {
+			friend response* make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink);
+			std::shared_ptr<websocket_sink> sink;
+			websocket_response(std::shared_ptr<websocket_sink> in_sink):sink(in_sink) {
+				code=101;
+			}
+			bool produce(connection &conn) {
+				produce_headers(conn);
+				conn.current_sink=sink;
+				return true;
+			}
+		};
+
+		response* make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
 			// protocol?
 			bool has_heads=c.has_headers(
 				"connection",
@@ -348,13 +359,36 @@ namespace net11 {
 			std::string rkey;
 			net11::base64encoder().encode(rkey,hash,20,true);
 			// now setup the response!
-			websocket_response *ws=new websocket_response();
+			websocket_response *ws=new websocket_response(wssink);
 			ws->set_header("Upgrade","websocket");
 			ws->set_header("Connection","upgrade");
 			ws->set_header("Sec-Websocket-Accept",rkey);
 			//ws.set_header("sec-websocket-protocol") // proto?!
-			c.current_sink=std::shared_ptr<sink>(new websocket_datasink());
 			return ws;
+		}
+
+
+		response* make_websocket(connection &c,int max_packet,std::function<bool(std::vector<char>&)> on_data) {
+			struct websocket_packet_sink : public websocket_sink {
+				int max_packet;
+				std::vector<char> data;
+				std::function<bool(std::vector<char>&)> on_data;
+				websocket_packet_sink(int in_max_packet,std::function<bool(std::vector<char>&)> in_on_data):max_packet(in_max_packet),on_data(in_on_data) {}
+				bool packet_start(bool fin,int type,uint64_t size) {
+					data.clear();
+					if (size>max_packet)
+						return false;
+					return true;
+				}
+				void packet_data(char b) {
+					data.push_back(b);
+				}
+				bool packet_end(bool fin,int type) {
+					return on_data(data);
+				}
+			};
+			std::shared_ptr<websocket_packet_sink> sink(new websocket_packet_sink(max_packet,on_data));
+			return make_websocket(c,sink);
 		}
 
 		response* match_file_response(connection &c,std::string urlprefix,std::string filepath) {
