@@ -159,6 +159,15 @@ namespace net11 {
 				o[(i<<2)+3]=(t)&0xff;
 			}
 		}
+		template<typename T>
+		T digest() {
+			T t;
+			char tmp[20];
+			digest(tmp);
+			for (int i=0;i<sizeof(tmp);i++)
+				t.push_back(tmp[i]);
+			return t;
+		}
 	};
 }
 

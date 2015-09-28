@@ -53,6 +53,25 @@ namespace net11 {
 			tmp[i]=0;
 			return tmp;
 		}
+		// stl compatible helper template
+		template<typename DT,typename ST>
+		void encode(DT &d,ST &s){
+			encode(d,s,s.size(),true);
+		}
+		// stl compatible helper template
+		template<typename DT,typename ST>
+		void encode(DT &d,ST &s,int count,bool end) {
+			for (int i=0;i<count;i++) {
+				char *p=encode(s[i]);
+				while(*p)
+					d.push_back(*(p++));
+			}
+			if (end) {
+				char *p=this->end();
+				while(*p)
+					d.push_back(*(p++));
+			}
+		}
 	};
 
 	class base64decoder {
@@ -70,6 +89,21 @@ namespace net11 {
 				return -1;
 			count-=8;
 			return (bits>>count)&0xff;
+		}
+		// stl compatible helper template
+		template<typename DT,typename ST>
+		void decode(DT &d,ST &s) {
+			decode(d,s,s.size());
+		}
+		// stl compatible helper template
+		template<typename DT,typename ST>
+		void decode(DT &d,ST &s,int count) {
+			for (int i=0;i<count;i++) {
+				int dec=decode(s[i]);
+				if (0>dec)
+					continue;
+				d.push_back((char)dec);
+			}
 		}
 	};
 };
