@@ -1,0 +1,65 @@
+<html>
+<head>
+<script>
+function init() {
+	//alert("Hello world");
+	
+	var logdata=[];
+	var maxlog=5;
+	
+	function log(x) {
+		logdata.push(x);
+		while (logdata.length>=maxlog) {
+			logdata.shift();
+		}
+		var out="";
+		for (var i=0;i<logdata.length;i++) {
+			out+=logdata[i]+"<br/>\n";
+		}
+		document.getElementById("log").innerHTML=out;
+	}
+	
+	document.addEventListener("change",function(e){
+		e=e||window.event;
+		if (e.target.id=="texten") {
+			sock.send(e.target.value);
+			log("User:"+e.target.value);
+		}
+	});
+	
+	var sa="ws://"+window.location.host+"/sockettest";
+	log("sockaddr:"+sa);
+	var sock=new WebSocket(sa,["alpha","beta"]);
+	sock.binaryType="arraybuffer";
+	sock.onopen=function(ev) {
+		log("socket opened");
+		sock.send("Hello world");
+	};
+	sock.onmessage=function(ev) {
+		var d;
+		if ("string"==typeof ev.data) {
+			d=ev.data;
+		} else {
+			d="";
+			var ar=new Int8Array(ev.data); //.length;
+			for (var i=0;i<ar.length;i++) {
+				d=d+" "+ar[i];
+			}
+		}
+		log("Sock:"+d);
+	};
+	sock.onerror=function(ev) {
+		log("some socket error");
+	};
+}
+</script>
+</head>
+<body onload="init();">
+<div id="log">
+</div>
+<input type="text" id="texten" value=""></input>
+<!-- <img src="logo.png"/>
+<img src="logo_ccw.png"/>
+<img src="logo_cw.png"/> -->
+</body>
+</html>
