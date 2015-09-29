@@ -489,7 +489,7 @@ namespace net11 {
 			return make_websocket(c,sink);
 		}
 
-		response* match_file_response(connection &c,std::string urlprefix,std::string filepath) {
+		response* match_file(connection &c,std::string urlprefix,std::string filepath) {
 			if (0!=c.url().find(urlprefix))
 				return 0; // not matching the prefix.
 			std::string checked=c.url().substr(urlprefix.size());

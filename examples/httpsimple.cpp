@@ -65,7 +65,7 @@ int main(int argc,char **argv) {
 				}
 
 				// if no other urls has hit yet try running a file matching service.
-				if (auto r=net11::http::match_file_response(c,"/","public_html/")) {
+				if (auto r=net11::http::match_file(c,"/","public_html/")) {
 					return r;
 				}
 
