@@ -6,6 +6,10 @@
 #include <stdint.h>
 #include <functional>
 #include <time.h>
+#include <cstring>
+#include <memory>
+#include <vector>
+#include <string>
 
 #ifdef _MSC_VER
 #include <windows.h>

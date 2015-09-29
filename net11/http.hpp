@@ -254,7 +254,7 @@ namespace net11 {
 						shift-=8;
 						b->produce( (sz>>shift)&0xff );
 					}
-					memcpy(b->to_produce(),data,sz);
+					std::memcpy(b->to_produce(),data,sz);
 					b->produced(sz);
 					c->producers.push_back([b](buffer& out) {
 						out.produce(*b);

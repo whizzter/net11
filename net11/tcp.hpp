@@ -1,6 +1,5 @@
 #include <functional>
 #include <exception>
-#include <memory>
 #include <vector>
 #include <array>
 #include <utility>
