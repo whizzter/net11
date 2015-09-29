@@ -230,8 +230,12 @@ namespace net11 {
 		class websocket : public std::enable_shared_from_this<websocket> {
 			friend websocket_sink;
 			std::weak_ptr<connection> conn;
-			websocket(std::weak_ptr<connection> in_conn):conn(in_conn) {}
+			int input_type=-1;
+			websocket(std::weak_ptr<connection> in_conn):conn(in_conn),input_type(-1) {}
 		public:
+			int get_input_type() {
+				return input_type;
+			}
 			static const int text=1;
 			static const int binary=2;
 			bool send(int ty,const char *data,uint64_t sz) {
@@ -292,8 +296,42 @@ namespace net11 {
 			uint32_t mask;
 			//std::vector<char> data;
 			
-			char control_data[128];
+			char control_data[125];
 			
+			bool endit() {
+				bool fin=info&0x80;
+				if ((info&0xf)<=2) {
+					int type=info&0xf;
+					if (websock->input_type==-1) {
+						if (type==0)
+							return false; // must get a new type!
+						websock->input_type=type;
+					} else {
+						if (type!=0)
+							return false; // already a set type!
+					}
+					if (!packet_end(fin,info&0xf))
+						return false;
+					if (fin)
+						websock->input_type=-1;
+				} else {
+					// processing for non-data packets.
+					if ((info&0xf)==8) {
+						websock->send(8,control_data,0);
+						return false;
+					} else if ((info&0xf)==9) {
+						// got a ping, need to do pong
+						websock->send(10,control_data,size);
+					} else if ((info&0xf)==10) {
+						// 10, we ignore pongs..
+					} else {
+						// unknown packet type
+						return false;
+					}
+				}
+				state=firstbyte;
+				return true;
+			}
 			bool advance() {
 				count=0;
 				if (state==sizebyte || state==sizeextra) {
@@ -303,20 +341,33 @@ namespace net11 {
 					}
 				}
 				state=bodybytes;
+				bool ok=true;
+				if (info&0x70)
+					return false; // Not allowed to use reserved bits
+				if (!(info&0x80) && ((info&0xf)>7))
+					return false;
 				if ((info&0xf)<=2) {
-					return packet_start(info&0x80,info&0xf,size);
+					ok&=packet_start(info&0x80,info&0xf,size);
 				} else {
 					if (size>sizeof(control_data)) {
 						return false;
 					}
 					switch(info&0xf) {
 					case 8 : // close
-						return false;
+						ok=true;
+						break;
 					case 9 : case 10 : // ping-pong
-						return true;
+						ok=true;
+						break;
 					default:
-						return false; // do not know how to handle packet
+						ok=false; // do not know how to handle packet
+						break;
 					}
+				}
+				if (size==0) {
+					return ok&endit();
+				} else {
+					return ok;
 				}
 			}
 			std::shared_ptr<websocket> websock;
@@ -376,19 +427,8 @@ namespace net11 {
 							}
 							if (++count==size) {
 								//printf("End of packet (%d)\n",info);
-								if ((info&0xf)<=2) {
-									if (!packet_end(info&0x80,info&0xf))
-										return false;
-								} else {
-									// processing for non-data packets.
-									if ((info&0xf)==9) {
-										// got a ping, need to do pong
-										printf("Pong sent\n");
-										websock->send(10,control_data,size);
-									}
-									// 10, we ignore pongs..
-								}
-								state=firstbyte;
+								if (!endit())
+									return false;
 							}
 							continue;
 						}
@@ -470,8 +510,7 @@ namespace net11 {
 				:websocket_sink(c),max_packet(in_max_packet),on_data(in_on_data) {
 				}
 				bool packet_start(bool fin,int type,uint64_t size) {
-					data.clear();
-					if (size>max_packet)
+					if ((data.size()+size)>max_packet)
 						return false;
 					return true;
 				}
@@ -480,7 +519,12 @@ namespace net11 {
 				}
 				bool packet_end(bool fin,int type) {
 					std::shared_ptr<websocket> ws(get_websocket());
-					return on_data(*ws,data);
+					bool ok=true;
+					if (fin) {
+						on_data(*ws,data);
+						data.clear();
+					}
+					return ok;
 				}
 			};
 			std::shared_ptr<connection> sc=std::static_pointer_cast<connection>(c.shared_from_this());

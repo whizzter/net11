@@ -51,8 +51,8 @@ int main(int argc,char **argv) {
 					}
 
 				if (c.url()=="/echo") {
-					if (auto r=net11::http::make_websocket(c,130000,[](net11::http::websocket &ws,std::vector<char> &msg) {
-						ws.send(msg);
+					if (auto r=net11::http::make_websocket(c,16*1024*1024,[](net11::http::websocket &ws,std::vector<char> &msg) {
+						ws.send(ws.get_input_type(),msg.data(),msg.size());
 						return true;
 					})) {
 						return r;
