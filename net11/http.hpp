@@ -2,6 +2,7 @@
 #include <map>
 #include <algorithm>
 
+#include <iostream>
 #include <sys/stat.h>
 #include <stdio.h>
 
@@ -548,7 +549,7 @@ namespace net11 {
 				int tr=ob.compact();
 				int rc=fread(ob.to_produce(),1,tr,fp->f);
 				if (rc>=0) {
-					ob.produced(osz+rc);
+					ob.produced(rc);
 				}
 				if (rc<=0) {
 					//if (feof(fp->f))
