@@ -15,6 +15,8 @@ namespace net11 {
 		class connection;
 		class response;
 		class websocket_response;
+		class websocket_sink;
+		class websocket;
 
 		response* make_text_response(int code,std::string &data);
 
@@ -112,7 +114,9 @@ namespace net11 {
 				));
 				current_sink=reqlinesink;
 			}
-			virtual ~connection() {}
+			virtual ~connection() {
+				//printf("Killed http connection\n");
+			}
 			// small helper for the template expansion of has_headers
 			bool has_headers() {
 				return true;
@@ -222,8 +226,56 @@ namespace net11 {
 			return true;
 		}
 
+		class websocket : public std::enable_shared_from_this<websocket> {
+			friend websocket_sink;
+			std::weak_ptr<connection> conn;
+			websocket(std::weak_ptr<connection> in_conn):conn(in_conn) {}
+		public:
+			static const int text=1;
+			static const int binary=2;
+			bool send(int ty,const char *data,uint64_t sz) {
+				if (auto c=conn.lock()) {
+					int shift;
+					int firstsize;
+					if (sz<126) {
+						shift=0;
+						firstsize=sz;
+					} else if (sz<65536) {
+						shift=16;
+						firstsize=126;
+					} else {
+						shift=64;
+						firstsize=127;
+					}
+					std::shared_ptr<buffer> b(new buffer(2+(shift/8)+sz));
+					b->produce(0x80|ty);
+					b->produce(firstsize);
+					while(shift) {
+						shift-=8;
+						b->produce( (sz>>shift)&0xff );
+					}
+					memcpy(b->to_produce(),data,sz);
+					b->produced(sz);
+					c->producers.push_back([b](buffer& out) {
+						out.produce(*b);
+						return 0!=b->usage();
+					});
+					return true;
+				} else {
+					// Sending to killed connection!
+					return false;
+				}
+			}
+			bool send(const std::string& data) {
+				return send(text,data.data(),data.size());
+			}
+			bool send(const std::vector<char>& data) {
+				return send(binary,data.data(),data.size());
+			}
+		};
 
 		class websocket_sink : public sink {
+			friend websocket_response;
 			enum wsstate {
 				firstbyte=0,
 				sizebyte,
@@ -237,7 +289,10 @@ namespace net11 {
 			uint64_t size;
 			bool want_mask;
 			uint32_t mask;
-			std::vector<char> data;
+			//std::vector<char> data;
+			
+			char control_data[128];
+			
 			bool advance() {
 				count=0;
 				if (state==sizebyte || state==sizeextra) {
@@ -247,10 +302,26 @@ namespace net11 {
 					}
 				}
 				state=bodybytes;
-				return packet_start(info&0x80,info&0xf,size);
+				if ((info&0xf)<=2) {
+					return packet_start(info&0x80,info&0xf,size);
+				} else {
+					if (size>sizeof(control_data)) {
+						return false;
+					}
+					switch(info&0xf) {
+					case 8 : // close
+						return false;
+					case 9 : case 10 : // ping-pong
+						return true;
+					default:
+						return false; // do not know how to handle packet
+					}
+				}
 			}
+			std::shared_ptr<websocket> websock;
+		protected:
+			websocket_sink(std::weak_ptr<connection> conn):state(firstbyte),websock(new websocket(conn)) {}
 		public:
-			websocket_sink():state(firstbyte) {}
 			virtual bool drain(buffer &buf) {
 				while(buf.usage()) {
 					switch(state) {
@@ -297,12 +368,25 @@ namespace net11 {
 					case bodybytes :
 						{
 							int b=(buf.consume()^( mask >> ( 8*(3^(count&3))) ))&0xff;
-							packet_data(b);
-							//printf("Read websocket byte: %d (%c)\n",b,b);
+							if ((info&0xf)<=2) {
+								packet_data(b);
+							} else {
+								control_data[count]=b;
+							}
 							if (++count==size) {
-								//printf("End of packet\n");
-								if (!packet_end(info&0x80,info&0xf))
-									return false;
+								//printf("End of packet (%d)\n",info);
+								if ((info&0xf)<=2) {
+									if (!packet_end(info&0x80,info&0xf))
+										return false;
+								} else {
+									// processing for non-data packets.
+									if ((info&0xf)==9) {
+										// got a ping, need to do pong
+										printf("Pong sent\n");
+										websock->send(10,control_data,size);
+									}
+									// 10, we ignore pongs..
+								}
 								state=firstbyte;
 							}
 							continue;
@@ -310,6 +394,9 @@ namespace net11 {
 					}
 				}
 				return true;
+			}
+			std::weak_ptr<websocket> get_websocket() {
+				return websock;
 			}
 			virtual bool packet_start(bool fin,int type,uint64_t size)=0;
 			virtual void packet_data(char c)=0;
@@ -327,17 +414,20 @@ namespace net11 {
 				conn.current_sink=sink;
 				return true;
 			}
+		public:
+			std::weak_ptr<websocket> get_websocket() {
+				return sink->websock;
+			}
 		};
 
 		response* make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
-			// protocol?
 			bool has_heads=c.has_headers(
 				"connection",
 				"upgrade",
 				//"origin",
 				"sec-websocket-version",
 				"sec-websocket-key");
-			printf("Has heads?:%d\n",has_heads);
+			//printf("Has heads?:%d\n",has_heads);
 			if (!has_heads)
 				return 0;
 			if (c.lowerheader("connection")!="upgrade") {
@@ -367,13 +457,17 @@ namespace net11 {
 			return ws;
 		}
 
-
-		response* make_websocket(connection &c,int max_packet,std::function<bool(std::vector<char>&)> on_data) {
+		response* make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data) {
 			struct websocket_packet_sink : public websocket_sink {
 				int max_packet;
 				std::vector<char> data;
-				std::function<bool(std::vector<char>&)> on_data;
-				websocket_packet_sink(int in_max_packet,std::function<bool(std::vector<char>&)> in_on_data):max_packet(in_max_packet),on_data(in_on_data) {}
+				std::function<bool(websocket &s,std::vector<char>&)> on_data;
+				websocket_packet_sink(
+					std::weak_ptr<connection> c,
+					int in_max_packet,
+					std::function<bool(websocket &s,std::vector<char>&)> in_on_data)
+				:websocket_sink(c),max_packet(in_max_packet),on_data(in_on_data) {
+				}
 				bool packet_start(bool fin,int type,uint64_t size) {
 					data.clear();
 					if (size>max_packet)
@@ -384,10 +478,14 @@ namespace net11 {
 					data.push_back(b);
 				}
 				bool packet_end(bool fin,int type) {
-					return on_data(data);
+					std::shared_ptr<websocket> ws(get_websocket());
+					return on_data(*ws,data);
 				}
 			};
-			std::shared_ptr<websocket_packet_sink> sink(new websocket_packet_sink(max_packet,on_data));
+			std::shared_ptr<connection> sc=std::static_pointer_cast<connection>(c.shared_from_this());
+			std::shared_ptr<websocket_packet_sink> sink(
+				new websocket_packet_sink(std::weak_ptr<connection>(sc),max_packet,on_data)
+			);
 			return make_websocket(c,sink);
 		}
 
