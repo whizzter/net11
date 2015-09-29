@@ -75,13 +75,15 @@ namespace net11 {
 		int input_buffer_size;
 		int output_buffer_size;
 		bool work_conn(tcpconn &c) {
-			while(c.want_input) {
+			int fill_count = 0;
+			while(c.want_input && fill_count<10) {
 				// process events as long as we have data and don't have multiple
 				// producers on queue to avoid denial of service scenarios where
 				// the producers are too slow to drain before the sink has read.
 				// Note: the sink should be called first since was_block below will break the loop on block.
 				if (c.input.usage() && c.conn->producers.size()<=1) {
 					c.want_input=c.conn->current_sink->drain(c.input);
+					continue;
 				}
 				// try to fill up the buffer as much as possible.
 				if (c.input.total_avail()) {
@@ -97,11 +99,14 @@ namespace net11 {
 						}
 					} else if (rc>0) {
 						c.input.produced(rc);
+						fill_count++;
+						continue;
 					} else {
 						// 0 on recv, closed sock;
 						return false;
 					}
 				}
+				break;
 			}
 			while (c.output.usage() || c.conn->producers.size()) {
 				if (c.output.usage()) {
@@ -221,7 +226,8 @@ namespace net11 {
 			listeners.push_back(std::make_pair(sock,spawn));
 			return false;
 		}
-		class connection {
+
+		class connection :  public std::enable_shared_from_this<connection> {
 		public:
 			connection() {
 				//printf("conn ctor\n");
