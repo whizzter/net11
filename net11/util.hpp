@@ -5,11 +5,13 @@
 
 #include <stdint.h>
 #include <functional>
+#include <time.h>
 
 #ifdef _MSC_VER
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/time.h>
 #endif
 
 namespace net11 {
@@ -355,6 +357,57 @@ namespace net11 {
 		usleep(10000);
 	#endif
 	}
+
+	uint64_t current_time_millis() {
+#ifdef _MSC_VER
+		SYSTEMTIME st;
+		GetSystemTime(&st);
+		return st.wMilliseconds+(1000*(uint64_t)time(0));
+#else
+		struct timeval tv;
+		gettimeofday(&tv,NULL);
+		return (tv.tv_usec/1000)+(1000*(uint64_t)time(0));
+#endif
+	}
+
+	class scheduler {
+		struct event {
+			//uint64_t next;
+			uint64_t period; // for recurring events
+			std::function<void()> once;
+			std::function<bool()> recurring;
+			event(std::function<void()> f):period(0),once(f) {}
+			event(uint64_t in_period,std::function<bool()> f):period(in_period),recurring(f) {}
+		};
+		std::multimap<uint64_t,event> events;
+	public:
+		void timeout(uint64_t timeout,std::function<void()> f) {
+			uint64_t event_time=current_time_millis()+timeout;
+			events.emplace(event_time,event(f));
+		}
+		void interval(uint64_t timeout,uint64_t period,std::function<bool()> f) {
+			uint64_t event_time=current_time_millis()+timeout;
+			events.emplace(event_time,event(period,f));
+		}
+		void poll() {
+			uint64_t now=current_time_millis();
+			while(!events.empty()) {
+				auto bi=events.begin();
+				if (bi->first>now)
+					break;
+				if (bi->second.period) {
+					if (bi->second.recurring()) {
+						uint64_t next=bi->first+bi->second.period;
+						events.emplace(next,event(bi->second.period,bi->second.recurring));
+						bi=events.begin();
+					}
+				} else {
+					bi->second.once();
+				}
+				events.erase(bi);
+			}
+		}
+	};
 }
 
 #endif // __INCLUDED_NET11_UTIL_HPP__
