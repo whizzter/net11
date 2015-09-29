@@ -1,4 +1,5 @@
-#define NET11_VERBOSE
+// Uncomment the line below to get verbose header information
+//#define NET11_VERBOSE
 
 #include <iostream>
 #include <net11/http.hpp>
