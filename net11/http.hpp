@@ -442,6 +442,7 @@ namespace net11 {
 			virtual bool packet_start(bool fin,int type,uint64_t size)=0;
 			virtual void packet_data(char c)=0;
 			virtual bool packet_end(bool fin,int type)=0;
+			virtual void websocket_closing() {}
 		};
 
 		class websocket_response : public response {
@@ -498,16 +499,18 @@ namespace net11 {
 			return ws;
 		}
 
-		response* make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data) {
+		response* make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close=std::function<void()>()) {
 			struct websocket_packet_sink : public websocket_sink {
 				int max_packet;
 				std::vector<char> data;
 				std::function<bool(websocket &s,std::vector<char>&)> on_data;
+				std::function<void()> on_close;
 				websocket_packet_sink(
 					std::weak_ptr<connection> c,
 					int in_max_packet,
-					std::function<bool(websocket &s,std::vector<char>&)> in_on_data)
-				:websocket_sink(c),max_packet(in_max_packet),on_data(in_on_data) {
+					std::function<bool(websocket &s,std::vector<char>&)> in_on_data,
+					std::function<void()> in_on_close)
+				:websocket_sink(c),max_packet(in_max_packet),on_data(in_on_data),on_close(in_on_close) {
 				}
 				bool packet_start(bool fin,int type,uint64_t size) {
 					if ((data.size()+size)>max_packet)
@@ -526,10 +529,16 @@ namespace net11 {
 					}
 					return ok;
 				}
+				void websocket_closing() {
+					if (on_close) {
+						on_close();
+						on_close=std::function<void()>();
+					}
+				}
 			};
 			std::shared_ptr<connection> sc=std::static_pointer_cast<connection>(c.shared_from_this());
 			std::shared_ptr<websocket_packet_sink> sink(
-				new websocket_packet_sink(std::weak_ptr<connection>(sc),max_packet,on_data)
+				new websocket_packet_sink(std::weak_ptr<connection>(sc),max_packet,on_data,on_close)
 			);
 			return make_websocket(c,sink);
 		}

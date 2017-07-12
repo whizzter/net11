@@ -43,7 +43,6 @@ namespace net11 {
 		class tcpconn {
 			friend tcp;
 			int sock;
-			// unique_ptr is broken, ifdef?
 			std::shared_ptr<connection> conn;
 			bool want_input;
 			buffer input;
