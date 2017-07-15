@@ -14,7 +14,7 @@ int main(int argc,char **argv) {
 		// creates a new server instance once we've started listening
 		net11::http::make_server(
 			// the routing function
-			[](net11::http::connection &c){
+			[](net11::http::connection &c)->net11::http::action* {
 #ifdef NET11_VERBOSE
 				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 #endif
@@ -70,7 +70,7 @@ int main(int argc,char **argv) {
 				}
 
 				// return null for a 404 response
-				return (net11::http::response*)nullptr;
+				return nullptr;
 			}
 		)
 	)) {

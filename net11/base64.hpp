@@ -90,6 +90,12 @@ namespace net11 {
 			count-=8;
 			return (bits>>count)&0xff;
 		}
+		template<typename DT>
+		DT decode(DT &s) {
+			DT out;
+			decode(out,s);
+			return out;
+		}
 		// stl compatible helper template
 		template<typename DT,typename ST>
 		void decode(DT &d,ST &s) {

@@ -7,6 +7,7 @@
 #include <functional>
 #include <time.h>
 #include <cstring>
+#include <cctype>
 #include <memory>
 #include <vector>
 #include <string>
@@ -39,19 +40,23 @@ namespace net11 {
 	void yield();
 
 	class buffer {
+		bool m_isview;
 		int m_cap;    // the total number of bytes in this buffer
 		int m_bottom; // the bottom index, ie the first used data element
 		int m_top;    // the top index, the first unused data element
 		char *m_data; // the actual data
+		buffer(const buffer &)=delete;
+		buffer& operator=(const buffer&)=delete;
 	public:
-		buffer(int capacity) {
-			m_cap=capacity;
-			m_bottom=0;
-			m_top=0;
-			m_data=new char[capacity];
+		// Construct a view of a piece of data (nothing available to fill but plenty of used to consume)
+		buffer(char *data,int amount) : m_isview(true),m_cap(amount),m_bottom(0),m_top(amount),m_data(data) {
+		}
+		buffer(int capacity) : m_isview(false),m_cap(capacity),m_bottom(0),m_top(0),m_data(new char[capacity]) {
+			//m_data=new char[capacity];
 		}
 		~buffer() {
-			delete m_data;
+			if (!m_isview)
+				delete m_data;
 		}
 		// returns the number of bytes corrently in the buffer
 		inline int usage() {
@@ -75,6 +80,11 @@ namespace net11 {
 			m_top=sz;
 			return direct_avail();
 		}
+		inline int peek() {
+			if (m_bottom>=m_top)
+				return -1;
+			return m_data[m_bottom]&0xff;
+		}
 		// consumes one byte from the currently available bytes
 		inline char consume() {
 			if (m_bottom>=m_top)
@@ -82,7 +92,7 @@ namespace net11 {
 			return m_data[m_bottom++];
 		}
 		// returns the pointer to a number of bytes to consume directly.
-		const char* to_consume() {
+		char* to_consume() {
 			return m_data+m_bottom;
 		}
 		// tells the buffer how many bytes was consumed
@@ -412,6 +422,55 @@ namespace net11 {
 			}
 		}
 	};
+
+	int stricmp(const std::string &l,const std::string &r) {
+		size_t count=l.size()<r.size()?l.size():r.size();
+		for (size_t i=0;i<count;i++) {
+			char lv=std::tolower(l[i]);
+			char rv=std::tolower(r[i]);
+			if (lv!=rv)
+				return lv-rv;
+		}
+		return l.size()-r.size();
+	}
+	bool strieq(const std::string &l,const std::string &r) {
+		return 0==stricmp(l,r);
+	}
+	
+	std::pair<std::string,std::string> split(const std::string &s,char delim) {
+		std::pair<std::string,std::string> out;
+		size_t dp=s.find(delim);
+		// just take the find up until the match (or to the end if no match)
+		out.first.append(s,0,dp);
+		// create an adjusted start position for the second string based on find status and position
+		size_t sp=(dp==std::string::npos)?s.size():dp+1;
+		out.second.append(s,sp,s.size()-sp);
+		return out;
+	}
+	void ltrim(std::string &v) {
+		size_t ec=0;
+		while(ec<v.size() && std::isspace( v[ec] ))
+			ec++;
+		if (ec)
+			v.erase(0,ec);
+	}
+	void rtrim(std::string &v) {
+		size_t ec=0;
+		while(ec<v.size() && std::isspace( v[v.size()-ec-1] ))
+			ec++;
+		if (ec)
+			v.erase(v.size()-ec,ec);
+	}
+	void trim(std::string &v) {
+		rtrim(v);
+		ltrim(v);
+	}
+	template<class I,class R,class FT>
+	I filterOr(R v,FT f,I elval) {
+		if (v)
+			return f(v);
+		return elval;
+	}
 }
 
 #endif // __INCLUDED_NET11_UTIL_HPP__

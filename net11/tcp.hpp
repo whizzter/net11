@@ -152,7 +152,8 @@ namespace net11 {
 		~tcp() {
 #ifdef _MSC_VER
 			if (WSACleanup()) {
-				throw new std::exception("WSACleanup shutdown error\n");
+				std::cerr<<"WSACleanup shutdown error"<<std::endl;
+				//throw new std::exception("WSACleanup shutdown error\n");
 			}
 #endif
 		}
