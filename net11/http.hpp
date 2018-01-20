@@ -11,7 +11,6 @@
 #include "base64.hpp"
 #include "sha1.hpp"
 
-
 namespace net11 {
 	namespace http {
 		class connection;
@@ -80,7 +79,7 @@ namespace net11 {
 			abort();
 		}
 
-		response* make_text_response(int code,std::string &data);
+		response* make_text_response(int code,const std::string &data);
 
 		class action {
 			friend class response;
@@ -520,26 +519,26 @@ namespace net11 {
 			return out;
 		}
 
-		response* make_blob_response(int code,std::vector<char> &in_data) {
+		response* make_blob_response(int code,const std::vector<char> &in_data) {
 			auto rv=make_stream_response(code,make_data_producer(in_data));
 			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 			return rv;
 		}
-		response* make_blob_response(int code,std::vector<char> in_data) {
+		//response* make_blob_response(int code,std::vector<char> in_data) {
+		//	auto rv=make_stream_response(code,make_data_producer(in_data));
+		//	rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
+		//	return rv;
+		//}
+		response* make_text_response(int code,const std::string &in_data) {
 			auto rv=make_stream_response(code,make_data_producer(in_data));
 			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 			return rv;
 		}
-		response* make_text_response(int code,std::string &in_data) {
-			auto rv=make_stream_response(code,make_data_producer(in_data));
-			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
-			return rv;
-		}
-		response* make_text_response(int code,std::string in_data) {
-			auto rv=make_stream_response(code,make_data_producer(in_data));
-			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
-			return rv;
-		}
+		//response* make_text_response(int code,std::string in_data) {
+		//	auto rv=make_stream_response(code,make_data_producer(in_data));
+		//	rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
+		//	return rv;
+		//}
 
 		class websocket : public std::enable_shared_from_this<websocket> {
 			friend websocket_sink;

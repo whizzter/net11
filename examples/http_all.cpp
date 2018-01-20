@@ -9,19 +9,28 @@ static net11::scheduler sched;
 int main(int argc,char **argv) {
 	net11::tcp l;
 
+	std::string big;
+	for (int i = 0;i < 1024 * 1024;i++) {
+		big.push_back('a' + (i % 25));
+	}
+
 	// start listening for http requests
 	if (l.listen(8080,
 		// creates a new server instance once we've started listening
 		net11::http::make_server(
 			// the routing function
-			[](net11::http::connection &c)->net11::http::action* {
+			[&](net11::http::connection &c)->net11::http::action* {
 #ifdef NET11_VERBOSE
 				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 #endif
 
-				// simple function returning data on a url
-				if (c.url()=="/hello") {
-					return net11::http::make_text_response(200,"Hello world!");
+				// simple url returning data on a url
+				if (c.url() == "/hello") {
+					return net11::http::make_text_response(200, "Hello world!");
+				}
+				// simple url returning a big piece of data on a url (used for benchmarking)
+				if (c.url() == "/big") {
+					return net11::http::make_text_response(200, big);
 				}
 
 				// for the correct url, try making a websocket echo service.

@@ -13,6 +13,7 @@
 #include <string>
 
 #ifdef _MSC_VER
+#include <winsock2.h>
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -34,7 +35,7 @@ namespace net11 {
 	template<typename T>
 	std::function<bool(buffer &)> make_data_producer(T * in_data);
 	template<typename T>
-	std::function<bool(buffer &)> make_data_producer(T &in_data);
+	std::function<bool(buffer &)> make_data_producer(const T &in_data);
 
 	// a utility function to give up a slice of cpu time
 	void yield();
@@ -172,7 +173,7 @@ namespace net11 {
 	}
 
 	template<typename T>
-	std::function<bool(buffer &)> make_data_producer(T &in_data) {
+	std::function<bool(buffer &)> make_data_producer(const T &in_data) {
 		return make_data_producer(new T(in_data));
 	}
 
@@ -366,7 +367,7 @@ namespace net11 {
 	void yield() {
 		// TODO: IOCP/KEVENT...
 	#ifdef _MSC_VER
-		Sleep(1);
+		SleepEx(1,TRUE);
 	#else
 		usleep(10000);
 	#endif
