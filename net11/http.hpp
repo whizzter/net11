@@ -429,16 +429,46 @@ namespace net11 {
 				}
 				return out;
 			}
+			template<class T>
+			void csvheaders(const std::string &k,T& fn,bool param_tolower=false) {
+				auto f=headers.find(k);
+				if (f==headers.end())
+					return;
+				std::string h;
+				auto & is=f->second;
+				for(int i=0;i<=is.size();) {
+					bool end=i==is.size();
+					if (!end && !h.size() && isspace(is[i])) {
+						i++;
+						continue;
+					}
+					if (end || is[i]==',') {
+						if (h.size())
+							fn(h);
+						h.clear();
+						i++;
+						continue;
+					}
+					if (param_tolower) {
+						h+=tolower(is[i++]);
+					} else {
+						h+=is[i++];
+					}
+				}
+			}
 			bool has_header(std::string &k) {
 				return headers.count(k)!=0;
 			}
 			bool has_header(const char *p) {
 #ifdef NET11_VERBOSE
+				using namespace std::literals;
 				std::cout
 					<<"HasHeader:"
 					<<p
 					<<" -> "
 					<<(headers.count(std::string(p))!=0)
+					<<" "
+					<<((headers.count(std::string(p))!=0)?("[[["+lowerheader(p)+"]]]"): ""s)
 					<<"\n";
 #endif
 				return headers.count(std::string(p))!=0;
@@ -784,7 +814,9 @@ namespace net11 {
 			//printf("Has heads?:%d\n",has_heads);
 			if (!has_heads)
 				return 0;
-			if (c.lowerheader("connection")!="upgrade") {
+			bool has_upgrade=false;
+			c.csvheaders("connection",[&](auto& hval){ if (hval=="upgrade") has_upgrade=true; },true);
+			if (!has_upgrade) {
 				return 0;
 			}
 			if (c.lowerheader("upgrade")!="websocket") {
