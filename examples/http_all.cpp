@@ -16,9 +16,7 @@ int main(int argc,char **argv) {
 	}
 
 	// start listening for http requests
-	if (l.listen(8080,
-		// creates a new server instance once we've started listening
-		net11::http::make_server(
+	if (net11::http::start_server(l,8080,
 			// the routing function
 			[&](net11::http::connection &c)->net11::http::action {
 #ifdef NET11_VERBOSE
@@ -83,7 +81,7 @@ int main(int argc,char **argv) {
 				return nullptr;
 			}
 		)
-	)) {
+	) {
 		printf("Error listening\n");
 		return -1;
 	}
