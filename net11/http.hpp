@@ -13,10 +13,22 @@
 
 namespace net11 {
 	namespace http {
+		// The HTTP module of net11 is a state-machine built on sinks managing each state.
+
+		// The state machine owner class that becomes the context of a tcp connection
+		// Killing it will destroy references to the rest of the HTTP system
 		class connection;
-		class action;
+
+		// When a HTTP request is made the router produces actions on how to proceed
+		// processing each request. All responses are actions but actions can also be
+		// to read/process an input before responding (such as PUT,POST,etc) 
+		class actiondata;
+		class responsedata;
 		class consume_action;
-		class response;
+		using action=std::unique_ptr<actiondata>;
+		using response=std::unique_ptr<responsedata>;
+
+		// Websocket support is built in and initiated as a response
 		class websocket_response;
 		class websocket_sink;
 		class websocket;
@@ -79,53 +91,99 @@ namespace net11 {
 			abort();
 		}
 
-		response* make_text_response(int code,const std::string &data);
+		response make_text_response(int code,const std::string &data);
 
-		class action {
-			friend class response;
+		// actiondata instances are implemention private and decides how the machine should proceed.
+		class actiondata {
+			friend class responsedata;
 			friend class connection;
 			friend class consume_action;
-			action() {}
+			actiondata() {}
 		protected:
 			virtual bool produce(connection &conn)=0;
 		public:
-			virtual ~action() {}
+			virtual ~actiondata() {}
 		};
 
-		class connection : public net11::tcp::connection {
-			friend std::function<net11::tcp::connection*()> make_server(std::function<action*(connection &conn)> route);
-			friend class response;
-			friend class consume_action;
+		// responses are a specialization of actions tht produce headers and output content
+		class responsedata : public actiondata {
+			friend class connection;
+			friend class websocket_response;
+			friend response make_stream_response(int code,std::function<bool(buffer &data)> prod);
 
+			std::map<std::string,std::string> head;
+			std::function<bool(buffer &)> prod;
+
+			responsedata(){}
+		protected:
+			int code;
+
+			// header helper producer (common for most responses)
+			virtual void produce_headers(connection &conn);
+			// could be specialized 
+			virtual bool produce(connection &conn);
+
+		public:
+			void set_header(const std::string &k,const std::string &v) {
+				head[k]=v;
+			}
+			virtual ~responsedata() {}
+		};
+
+		// the main HTTP connection managing class
+		class connection {
+			friend std::function<void(net11::tcp::connection*)> make_server(const std::function<action(connection &conn)>& route);
+			friend response make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close);
+			friend class responsedata;
+			friend class consume_action;
+			friend class websocket;
+			friend class websocket_response;
+
+			// reference to the actual tcp connection that does input/output
+			tcp::connection *tconn;
+
+			// a weak this-ptr used to provide the shared ptr to things that needs a reference.
+			std::weak_ptr<connection> wthis;
+
+			// the reqlinesink parses request lines (finds method, url and http version data)
 			std::shared_ptr<sink> reqlinesink;
+			// contain the found data
 			std::string reqline[3];
 
-			std::shared_ptr<sink> headsink;
-			std::map<std::string,std::string> headers;
-			std::shared_ptr<sink> postchunkedsink;
+			// decides the next default request sink (could be overridden by HTTP-upgrades)
+			std::shared_ptr<sink> nextreqsink() {
+				// by default we work with keep-alive connections on HTTP/1.1
+				// so we proceed to read another request.
+				if (reqline[2].size() && reqline[2]=="HTTP/1.1") {
+					return reqlinesink;
+				} else {
+					// on older HTTP versions we don't do more requests.
+					return nullptr;
+				}
+			}
 
+			// the header sink is responsible for parsing the http headers received.
+			std::shared_ptr<sink> headsink;
+			// the headers are stored here
+			std::map<std::string,std::string> headers;
+
+			std::shared_ptr<sink> postchunkedsink;
 			std::shared_ptr<sink> m_chunkedcontentsink;
 
-			std::function<action*(connection &conn)> router;
-			std::function<response*(buffer& data,bool end)> dataconsumer;
+			// The router function, this function
+			const std::function<action(connection &conn)> router;
 
-			std::function<response*(buffer*data)> consume_fun;
+			// remenant of older consumption code?
+			// std::function<response*(buffer& data,bool end)> dataconsumer;
 
+			// a function that is enabled by consume actions to pass over read data to
+			// end consumers when the server is expecting data.
+			std::function<response(buffer*data)> consume_fun;
+
+			// only produce once per request
 			bool produced;
-			bool produce(action *act) {
-				if (produced)
-					return true;
-				consume_fun=nullptr;
-				if (!act) {
-					//std::map<std::string,std::string> head; //{{"connection","close"}};
-					std::string msg="Error 404, "+url()+" not found";
-					act=(action*)make_text_response(404,msg);
-				}
-				// TODO: make sure that connection lines are there?
-				bool rv=act->produce(*this);
-				delete act;
-				return rv;
-			}
+			// actual function to invoke the requested production
+			bool produce(action&& act);
 
 			class sizedcontentsink : public sink {
 				friend class connection;
@@ -139,19 +197,19 @@ namespace net11 {
 					if (conn->consume_fun)
 					{
 						buffer view(buf.to_consume(),amount);
-						response *r=conn->consume_fun(&view);
+						response r=conn->consume_fun(&view);
 						if (r)
-							rv=conn->produce((action*)r);
+							rv=conn->produce((action)std::move(r));
 					}
 					buf.consumed(amount);
 					clen-=amount;
 					if (clen==0) {
-						conn->current_sink=conn->reqlinesink;
-						response *r=0;
+						conn->tconn->current_sink=conn->nextreqsink();
+						response r=0;
 						if (conn->consume_fun) {
 							r=conn->consume_fun(NULL);
 						}
-						bool rv=conn->produce((action*)r);
+						bool rv=conn->produce(std::move(r));
 						return rv;
 					}
 					return rv;
@@ -207,7 +265,7 @@ namespace net11 {
 								return false; // syntax error
 							if (clen==0) {
 								state=0; sstate=0; clen=0;
-								conn->current_sink=conn->postchunkedsink;
+								conn->tconn->current_sink=conn->postchunkedsink;
 								return rv;
 							} else {
 								state=9; // content
@@ -263,9 +321,9 @@ namespace net11 {
 								if (conn->consume_fun)
 								{
 									buffer view(buf.to_consume(),amount);
-									response *r=conn->consume_fun(&view);
+									response r=conn->consume_fun(&view);
 									if (r)
-										rv=conn->produce((action*)r);
+										rv=conn->produce(std::move(r));
 								}
 								buf.consumed(amount);
 								clen-=amount;
@@ -285,8 +343,9 @@ namespace net11 {
 			std::shared_ptr<sizedcontentsink> m_sizedcontentsink;
 
 			connection(
-				std::function<action*(connection &conn)> in_router
-			):router(in_router) {
+				tcp::connection* tcp_conn,
+				const std::function<action(connection &conn)>& in_router
+			):tconn(tcp_conn),router(in_router) {
 				reqlinesink=std::shared_ptr<sink>(new net11::line_parser_sink("\r\n",4096,[this](std::string &l){
 					bool in_white=false;
 					int outidx=0;
@@ -308,7 +367,7 @@ namespace net11 {
 						}
 					}
 					if (outidx>0 && reqline[0].size() && reqline[1].size()) {
-						this->current_sink=headsink;
+						this->tconn->current_sink=headsink;
 						return true;
 					} else {
 						// TODO: error handling?!
@@ -334,21 +393,21 @@ namespace net11 {
 						if ( tehead && *tehead!="identity" ) {
 							// Chunked encoding if transfer-encoding header exists and isn't set to identity
 							//std::cerr<<"CHUNKED!\n";
-							this->current_sink=m_chunkedcontentsink;
+							this->tconn->current_sink=m_chunkedcontentsink;
 						} else if (auto clhead=this->header("content-length")) {
 							//std::cerr<<"Content LEN\n";
 							// only allow content-length influence IFF no transfer-enc is present
 							net11::trim(*clhead);
 							size_t clen=std::stoi(*clhead);
 							m_sizedcontentsink->clen=clen>=0?clen:0;
-							this->current_sink=m_sizedcontentsink;
+							this->tconn->current_sink=m_sizedcontentsink;
 						} else {
 							// this server doesn't handle other kinds of content
-							this->current_sink=reqlinesink;
+							this->tconn->current_sink=nextreqsink();
 						}
 						// TODO: urlencodings?
-						action *act=router(*this);
-						bool rv=produce(act);
+						action act=router(*this);
+						bool rv=produce(std::move(act));
 						return rv;
 					}
 				));
@@ -360,16 +419,16 @@ namespace net11 {
 						return true;
 					},
 					[this](const char *err){
-						response *r=0;
+						response r=0;
 						if (consume_fun) {
 							r=consume_fun(NULL);
 						}
-						bool rv=produce((action*)r);
-						this->current_sink=reqlinesink;
+						this->tconn->current_sink=nextreqsink();
+						bool rv=produce(std::move(r));
 						return rv;
 					}
 				));
-				current_sink=reqlinesink;
+				tconn->current_sink=reqlinesink;
 			}
 			virtual ~connection() {
 				//printf("Killed http connection\n");
@@ -378,6 +437,7 @@ namespace net11 {
 			bool has_headers() {
 				return true;
 			}
+		
 		public:
 			std::string& method() {
 				return reqline[0];
@@ -479,96 +539,53 @@ namespace net11 {
 			}
 		};
 
-		std::function<net11::tcp::connection*()> make_server(std::function<action*(connection &conn)> route) {
+		std::function<void(net11::tcp::connection*)> make_server(const std::function<action(connection &conn)>& route) {
 			// now create a connection spawn function
-			return [route]() {
-				return (net11::tcp::connection*)new connection(route);
+			return [route](net11::tcp::connection* tconn) {
+				std::shared_ptr<connection> conn(
+					new connection(tconn,route),
+					[](auto p) { delete p; }
+				);
+				conn->wthis=conn;
+				tconn->ctx=conn;
 			};
 		};
 
+		bool start_server(net11::tcp& l,int port,const std::function<action(connection&conn)>& route) {
+			return l.listen(port,make_server(route));
+		}
+
 		class consume_action : public action {
 		protected:
-			std::function<response*(buffer*buf)> fn;
+			std::function<response(buffer*buf)> fn;
 			virtual bool produce(connection &conn) {
 				//std::cerr<<"Nil production right now from consume action\n";
 				conn.consume_fun=fn;
 				return true;
 			}
 		public:
-			consume_action(const std::function<response*(buffer *buf)> & in_fn) : fn(in_fn) {}
+			consume_action(const std::function<response(buffer *buf)> & in_fn) : fn(in_fn) {}
 			~consume_action(){}
 		};
 
-		class response : public action {
-			friend class connection;
-			friend class websocket_response;
-			friend class response* make_stream_response(int code,std::function<bool(buffer &data)> prod);
-
-			std::map<std::string,std::string> head;
-			std::function<bool(buffer &)> prod;
-
-			response(){}
-		protected:
-			int code;
-
-			virtual void produce_headers(connection &conn) {
-				conn.produced=true;
-				std::string resline="HTTP/1.1 "+std::to_string(code)+" some message\r\n";
-				for(auto kv:head) {
-					resline=resline+kv.first+": "+kv.second+"\r\n";
-				}
-				resline+="\r\n";
-				conn.producers.push_back(make_data_producer(resline));
-			}
-
-			virtual bool produce(connection &conn) {
-				produce_headers(conn);
-				if (head.count("content-length")) {
-					conn.producers.push_back(prod);
-				} else {
-					// TODO: implement chunked responses?
-					abort(); //conn.producers.push_back([this](
-				}
-				return true;
-			}
-
-			//virtual void produce_headers(connection &conn);
-			//virtual bool produce(connection &conn);
-		public:
-			response* set_header(const std::string &k,const std::string &v) {
-				head[k]=v;
-				return this;
-			}
-			virtual ~response() {}
-		};
-
-		response* make_stream_response(int code,std::function<bool(buffer &data)> prod) {
-			auto out=new response();
+		response make_stream_response(int code,std::function<bool(buffer &data)> prod) {
+			//auto out=new response();
+			response out(new responsedata()); //,[](auto p){delete p;} );
 			out->code=code;
 			out->prod=prod;
 			return out;
 		}
 
-		response* make_blob_response(int code,const std::vector<char> &in_data) {
+		response make_blob_response(int code,const std::vector<char> &in_data) {
 			auto rv=make_stream_response(code,make_data_producer(in_data));
 			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 			return rv;
 		}
-		//response* make_blob_response(int code,std::vector<char> in_data) {
-		//	auto rv=make_stream_response(code,make_data_producer(in_data));
-		//	rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
-		//	return rv;
-		//}
-		response* make_text_response(int code,const std::string &in_data) {
+		response make_text_response(int code,const std::string &in_data) {
 			auto rv=make_stream_response(code,make_data_producer(in_data));
 			rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
 			return rv;
 		}
-		//response* make_text_response(int code,std::string in_data) {
-		//	auto rv=make_stream_response(code,make_data_producer(in_data));
-		//	rv->set_header(std::string("content-length"),std::to_string(in_data.size()));
-		//	return rv;
-		//}
 
 		class websocket : public std::enable_shared_from_this<websocket> {
 			friend websocket_sink;
@@ -604,7 +621,7 @@ namespace net11 {
 					}
 					std::memcpy(b->to_produce(),data,sz);
 					b->produced(sz);
-					c->producers.push_back([b](buffer& out) {
+					c->tconn->producers.push_back([b](buffer& out) {
 						out.produce(*b);
 						return 0!=b->usage();
 					});
@@ -787,15 +804,15 @@ namespace net11 {
 			virtual void websocket_closing() {}
 		};
 
-		class websocket_response : public response {
-			friend response* make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink);
+		class websocket_response : public responsedata {
+			friend response make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink);
 			std::shared_ptr<websocket_sink> sink;
 			websocket_response(std::shared_ptr<websocket_sink> in_sink):sink(in_sink) {
 				code=101;
 			}
 			bool produce(connection &conn) {
 				produce_headers(conn);
-				conn.current_sink=sink;
+				conn.tconn->current_sink=sink;
 				return true;
 			}
 		public:
@@ -804,7 +821,7 @@ namespace net11 {
 			}
 		};
 
-		response* make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
+		response make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
 			bool has_heads=c.has_headers(
 				"connection",
 				"upgrade",
@@ -840,10 +857,10 @@ namespace net11 {
 			ws->set_header("Connection","upgrade");
 			ws->set_header("Sec-Websocket-Accept",rkey);
 			//ws.set_header("sec-websocket-protocol") // proto?!
-			return ws;
+			return response(ws);
 		}
 
-		response* make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close=std::function<void()>()) {
+		response make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close=std::function<void()>()) {
 			struct websocket_packet_sink : public websocket_sink {
 				int max_packet;
 				std::vector<char> data;
@@ -880,14 +897,14 @@ namespace net11 {
 					}
 				}
 			};
-			std::shared_ptr<connection> sc=std::static_pointer_cast<connection>(c.shared_from_this());
+			//std::shared_ptr<connection> sc=c.wthis; //=std::static_pointer_cast<connection>(c.shared_from_this());
 			std::shared_ptr<websocket_packet_sink> sink(
-				new websocket_packet_sink(std::weak_ptr<connection>(sc),max_packet,on_data,on_close)
+				new websocket_packet_sink(c.wthis,max_packet,on_data,on_close)
 			);
 			return make_websocket(c,sink);
 		}
 
-		action* match_file(connection &c,std::string urlprefix,std::string filepath) {
+		action match_file(connection &c,std::string urlprefix,std::string filepath) {
 			if (0!=c.url().find(urlprefix))
 				return 0; // not matching the prefix.
 			std::string checked=c.url().substr(urlprefix.size());
@@ -941,7 +958,7 @@ namespace net11 {
 			};
 			std::shared_ptr<fh> fp(new fh(f));
 
-			return make_stream_response(200,[fp](buffer &ob) {
+			auto out=make_stream_response(200,[fp](buffer &ob) {
 				int osz=ob.usage();
 				int tr=ob.compact();
 				int rc=fread(ob.to_produce(),1,tr,fp->f);
@@ -953,8 +970,49 @@ namespace net11 {
 					return false; // always stop sending on error
 				}
 				return true;
-			})->set_header("content-length",std::to_string(stbuf.st_size));
+			});
+			out->set_header("content-length",std::to_string(stbuf.st_size));
+			return out;
 		}
+
+
+			inline bool connection::produce(action&& act) {
+				if (produced)
+					return true;
+				consume_fun=nullptr;
+				if (!act) {
+					//std::map<std::string,std::string> head; //{{"connection","close"}};
+					std::string msg="Error 404, "+url()+" not found";
+					act=(action)make_text_response(404,msg);
+				}
+				// TODO: make sure that connection lines are there?
+				bool rv=act->produce(*this);
+				// delete act; no longer needed..
+				return rv;
+			}
+
+			inline void responsedata::produce_headers(connection &conn) {
+				conn.produced=true;
+				std::string resline="HTTP/1.1 "+std::to_string(code)+" OK\r\n";
+				for(auto kv:head) {
+					resline=resline+kv.first+": "+kv.second+"\r\n";
+				}
+				resline+="\r\n";
+				conn.tconn->producers.push_back(make_data_producer(resline));
+			}
+
+			inline bool responsedata::produce(connection &conn) {
+				produce_headers(conn);
+				if (head.count("content-length")) {
+					conn.tconn->producers.push_back(prod);
+				} else {
+					// TODO: implement chunked responses?
+					abort(); //conn.producers.push_back([this](
+				}
+				return true;
+			}
+
+
 	}
 }
 

@@ -56,11 +56,12 @@ namespace net11 {
 	public:
 		class connection;
 	private:
-		std::vector<std::pair<int, std::function<connection*()>>> listeners;
-		class tcpconn {
+		std::vector<std::pair<int, std::function<void(connection*)>>> listeners;
+	public:
+		class connection {
 			friend tcp;
 			int sock;
-			std::shared_ptr<connection> conn;
+			//std::shared_ptr<connection> conn;
 			bool want_input;
 			buffer input;
 			buffer output;
@@ -72,14 +73,24 @@ namespace net11 {
 			WSABUF wsa_output;
 			WSAOVERLAPPED overlapped_output;
 #endif
-			tcpconn(int insize, int outsize) :input(insize), output(outsize) {}
-		public:
-			~tcpconn() {
+			connection(int insize, int outsize) :input(insize), output(outsize) {}
+		//public:
+			~connection() {
 				NET11_TCP_LOG("Socket %x killed\n", sock);
 			}
+			struct deleter {
+				void operator()(connection* p) {
+					delete p;
+				}
+			};
+		public:
+			std::shared_ptr<sink> current_sink;
+			std::function<void()> terminate;
+			std::vector<std::function<bool(buffer&)> > producers;
+			std::shared_ptr<void> ctx;
 		};
-
-		std::vector<std::shared_ptr<tcpconn>> conns;
+	private:
+		std::vector<std::unique_ptr<connection,connection::deleter>> conns;
 		int input_buffer_size;
 		int output_buffer_size;
 
@@ -154,6 +165,7 @@ namespace net11 {
 				if (c.input.usage()) {
 					NET11_TCP_LOG("Processing data on socket %x\n", c.sock);
 					c.want_input = c.conn->current_sink->drain(c.input);
+					c.want_input &= bool(c.conn->current_sink);
 					continue;
 				}
 				// already an overlapped read in progress.
@@ -245,15 +257,16 @@ namespace net11 {
 		}
 
 #else
-		bool work_conn(tcpconn &c) {
+		bool work_conn(connection &c) {
 			int fill_count = 0;
 			while (c.want_input && fill_count<10) {
 				// process events as long as we have data and don't have multiple
 				// producers on queue to avoid denial of service scenarios where
 				// the producers are too slow to drain before the sink has read.
 				// Note: the sink should be called first since was_block below will break the loop on block.
-				if (c.input.usage() && c.conn->producers.size() <= 1) {
-					c.want_input = c.conn->current_sink->drain(c.input);
+				if (c.input.usage() && c.producers.size() <= 1) {
+					c.want_input = c.current_sink->drain(c.input);
+					c.want_input &= bool(c.current_sink);
 					continue;
 				}
 				// try to fill up the buffer as much as possible.
@@ -280,7 +293,7 @@ namespace net11 {
 				break;
 			}
 			bool eop = false;
-			while (c.output.usage() || c.conn->producers.size()) {
+			while (c.output.usage() || c.producers.size()) {
 				if (c.output.usage()) {
 #ifdef _MSC_VER
 					const int send_flags = 0;
@@ -303,11 +316,11 @@ namespace net11 {
 				}
 				if (eop)
 					break;
-				while (c.output.total_avail() && c.conn->producers.size()) {
+				while (c.output.total_avail() && c.producers.size()) {
 					int preuse = c.output.total_avail();
-					if (!c.conn->producers.front()(c.output)) {
+					if (!c.producers.front()(c.output)) {
 						// producer finished, remove it.
-						c.conn->producers.erase(c.conn->producers.begin());
+						c.producers.erase(c.producers.begin());
 					} else if (preuse == c.output.total_avail()) {
 						// no data was generated.
 						eop = true;
@@ -315,7 +328,7 @@ namespace net11 {
 					}
 				}
 			}
-			return c.want_input || c.output.usage() || c.conn->producers.size();
+			return c.want_input || c.output.usage() || c.producers.size();
 		}
 #endif
 
@@ -331,10 +344,10 @@ namespace net11 {
 		}
 		~tcp() {
 #ifdef _MSC_VER
-			if (WSACleanup()) {
-				std::cerr<<"WSACleanup shutdown error"<<std::endl;
+			//if (WSACleanup()) {
+				//std::cerr<<"WSACleanup shutdown error"<<std::endl;
 				//throw new std::exception("WSACleanup shutdown error\n");
-			}
+			//}
 #endif
 		}
 		bool poll() {
@@ -354,10 +367,18 @@ namespace net11 {
 #ifndef NET11_OVERLAPPED
 						set_non_blocking_socket(newsock);
 #endif
-						conns.push_back(std::shared_ptr<tcpconn>(new tcpconn(input_buffer_size,output_buffer_size)));
+						//conns.push_back(std::shared_ptr<connection>(
+						conns.emplace_back(
+							new connection(input_buffer_size,output_buffer_size)
+							//,[](auto p) { delete p; }
+						);
 						conns.back()->sock=newsock;
 						conns.back()->want_input=true;
-						conns.back()->conn.reset(l.second());
+						
+						//conns.back()->conn=l.second()->shared_from_this();
+						//conns.back()->conn.reset(l.second());
+						l.second(conns.back().get());
+						
 						continue;
 					} else {
 						break;
@@ -370,7 +391,7 @@ namespace net11 {
 				std::remove_if(
 					conns.begin(),
 					conns.end(),
-					[this](std::shared_ptr<tcpconn> c) {
+					[this](auto & c) {
 						//printf("running conn:%p\n",&c);
 						if (!work_conn(*c)) {
 							NET11_TCP_LOG("Wanting to remove conn %x!\n",c->sock);
@@ -385,7 +406,7 @@ namespace net11 {
 			);
 			return true; // change this somehow?
 		}
-		bool listen(int port,std::function<connection*()> spawn) {
+		bool listen(int port,std::function<void(connection*)> spawn) {
 			int sock=-1;
 			struct sockaddr_in sockaddr;
 			if (-1==(sock=socket(PF_INET,SOCK_STREAM,IPPROTO_TCP))) {
@@ -407,20 +428,52 @@ namespace net11 {
 			listeners.push_back(std::make_pair(sock,spawn));
 			return false;
 		}
+		bool connect(const std::string & host,int port,const std::function<void(connection*)> spawn) {
+			struct sockaddr_in sockaddr;
+			memset(&sockaddr,0,sizeof(sockaddr));
+			sockaddr.sin_family=AF_INET;
+			sockaddr.sin_port=htons(port);
+			sockaddr.sin_addr.s_addr=inet_addr(host.c_str());
+			if (sockaddr.sin_addr.s_addr==INADDR_NONE) {
+				struct hostent *he=gethostbyname(host.c_str());
+				if (!he) {
+					printf("Failed getting hostname");
+					return true;
+				}
+				memcpy(&sockaddr.sin_addr,he->h_addr,sizeof(sockaddr.sin_addr));
+			}
+			
+			int sock=-1;
+			if (-1==(sock=socket(PF_INET,SOCK_STREAM,IPPROTO_TCP))) {
+				return true;
+			}
+			if (::connect(sock,(struct sockaddr*)&sockaddr,sizeof(sockaddr))) {
+				printf("Connect failed?\n");
+				closesocket(sock);
+				return true;
+			}
+			set_non_blocking_socket(sock);
+			//std::shared_ptr<connection> out(
+			auto* out=new connection(input_buffer_size,output_buffer_size);
+			//	[](auto p) { delete p; }
+			//);
+			out->sock=sock;
+			out->want_input=true;
+			spawn(out);
+			//out->conn.reset(spawn());
+			conns.emplace_back(out);
+			return false;
+		}
 
-		class connection :  public std::enable_shared_from_this<connection> {
-		public:
-			connection() {
-				//printf("conn ctor\n");
-			}
-			virtual ~connection() {
-				//printf("conn dtor\n");
-			}
-			//std::function<bool(std::vector<char>&)> *sink;
-			std::shared_ptr<sink> current_sink;
-			//std::vector<std::function<bool(std::vector<char>&)> > producers;
-			std::vector<std::function<bool(buffer&)> > producers;
-		};
+//		class connection : public std::enable_s {
+//			connection() {
+//				//printf("conn ctor\n");
+//			}
+//			virtual ~connection() {
+//				//printf("conn dtor\n");
+//			}
+//		public:
+//		};
 	};
 }
 

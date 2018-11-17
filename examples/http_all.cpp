@@ -1,4 +1,5 @@
 // Uncomment the line below to get verbose header information
+
 //#define NET11_VERBOSE
 
 #include <iostream>
@@ -19,7 +20,7 @@ int main(int argc,char **argv) {
 		// creates a new server instance once we've started listening
 		net11::http::make_server(
 			// the routing function
-			[&](net11::http::connection &c)->net11::http::action* {
+			[&](net11::http::connection &c)->net11::http::action {
 #ifdef NET11_VERBOSE
 				std::cout<<c.method()<<" on url:"<<c.url()<<"\n";
 #endif

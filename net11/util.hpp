@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <map>
 
 #ifdef _MSC_VER
 #include <winsock2.h>
