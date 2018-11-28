@@ -24,9 +24,12 @@ namespace net11 {
 		// to read/process an input before responding (such as PUT,POST,etc) 
 		class actiondata;
 		class responsedata;
+		class websocket_response;
+
 		class consume_action;
 		using action=std::unique_ptr<actiondata>;
 		using response=std::unique_ptr<responsedata>;
+		using wsresponse=std::unique_ptr<websocket_response>;
 
 		// Websocket support is built in and initiated as a response
 		class websocket_response;
@@ -133,7 +136,7 @@ namespace net11 {
 		// the main HTTP connection managing class
 		class connection {
 			friend std::function<void(net11::tcp::connection*)> make_server(const std::function<action(connection &conn)>& route);
-			friend response make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close);
+			friend wsresponse make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close);
 			friend class responsedata;
 			friend class consume_action;
 			friend class websocket;
@@ -593,6 +596,8 @@ namespace net11 {
 			int input_type=-1;
 			websocket(std::weak_ptr<connection> in_conn):conn(in_conn),input_type(-1) {}
 		public:
+			std::shared_ptr<void> ctx;    // auxillary shared ptr to hold ownership of things to be destroyed with the connection
+		
 			int get_input_type() {
 				return input_type;
 			}
@@ -805,7 +810,7 @@ namespace net11 {
 		};
 
 		class websocket_response : public responsedata {
-			friend response make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink);
+			friend wsresponse make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink);
 			std::shared_ptr<websocket_sink> sink;
 			websocket_response(std::shared_ptr<websocket_sink> in_sink):sink(in_sink) {
 				code=101;
@@ -821,7 +826,7 @@ namespace net11 {
 			}
 		};
 
-		response make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
+		wsresponse make_websocket(connection &c,std::shared_ptr<websocket_sink> wssink) {
 			bool has_heads=c.has_headers(
 				"connection",
 				"upgrade",
@@ -857,10 +862,10 @@ namespace net11 {
 			ws->set_header("Connection","upgrade");
 			ws->set_header("Sec-Websocket-Accept",rkey);
 			//ws.set_header("sec-websocket-protocol") // proto?!
-			return response(ws);
+			return wsresponse(ws);
 		}
 
-		response make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close=std::function<void()>()) {
+		wsresponse make_websocket(connection &c,int max_packet,std::function<bool(websocket &s,std::vector<char>&)> on_data,std::function<void()> on_close=std::function<void()>()) {
 			struct websocket_packet_sink : public websocket_sink {
 				int max_packet;
 				std::vector<char> data;
@@ -904,7 +909,7 @@ namespace net11 {
 			return make_websocket(c,sink);
 		}
 
-		action match_file(connection &c,std::string urlprefix,std::string filepath) {
+		response match_file(connection &c,std::string urlprefix,std::string filepath) {
 			if (0!=c.url().find(urlprefix))
 				return 0; // not matching the prefix.
 			std::string checked=c.url().substr(urlprefix.size());

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <functional>
 #include <exception>
 #include <vector>
